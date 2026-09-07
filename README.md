@@ -88,7 +88,11 @@ Strips water and ions from the trajectory and re-images it, producing `nopbc.prm
 ```bash
 python rms.py
 ```
-Loads `nopbc.prmtop` / `nopbc.xtc`. Aligns on protein, computes protein+ligand RMSD over time and per-residue RMSF. Edit `protein_indices` (`resid 0 to 286`) to match your receptor's actual residue range, and `ligand_indices` (`resname LIG`) to your ligand's residue name. Outputs `rmsd_500.png`, `rmsf_600.png`.
+Loads `nopbc.prmtop` / `nopbc.xtc`. Aligns on protein, computes protein+ligand RMSD over time and per-residue RMSF. Edit `protein_indices` (`resid 0 to 286`) to match your receptor's actual residue range, and `ligand_indices` (`resname LIG`) to your ligand's residue name. Outputs `rmsd_500.png`, `rmsf_500.png`.
+
+<img width="10000" height="5000" alt="rmsf_500" src="https://github.com/user-attachments/assets/bd7edb51-2f16-4d4d-b692-eb7a18784bef" />
+<img width="6000" height="3000" alt="rmsd_500" src="https://github.com/user-attachments/assets/d339eff2-ae1d-4ec5-aba0-3368f98ea0cb" />
+
 
 **H-bond analysis** (`hbond_analysis.py`):
 ```bash
