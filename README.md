@@ -21,7 +21,7 @@ which tleap antechamber cpptraj
 ## 2. Ligand Parameterization (AM1-BCC / GAFF2)
 
 ```bash
-antechamber -i ligand.pdb -fi pdb -o WTFA_gaff2.mol2 -fo mol2 -c bcc -at gaff2 -rn WTFA
+antechamber -i ligand.mol2 -fi mol2 -o WTFA_gaff2.mol2 -fo mol2 -c bcc -at gaff2 -rn WTFA
 parmchk2 -i WTFA_gaff2.mol2 -f mol2 -o WTFA.frcmod -s gaff2
 ```
 Inspect/clean the mol2 file for duplicate bonds or atom naming issues if tleap complains later (see `check_mol2_*.py` helper scripts).
