@@ -86,7 +86,7 @@ Strips water and ions from the trajectory and re-images it, producing `nopbc.prm
 
 **RMSD / RMSF** (`rmsF.py`):
 ```bash
-python rmsF.py
+python rms.py
 ```
 Loads `nopbc.prmtop` / `nopbc.xtc`. Aligns on protein, computes protein+ligand RMSD over time and per-residue RMSF. Edit `protein_indices` (`resid 0 to 286`) to match your receptor's actual residue range, and `ligand_indices` (`resname LIG`) to your ligand's residue name. Outputs `rmsd_500.png`, `rmsf_600.png`.
 
