@@ -1,5 +1,5 @@
-parm __PROJECT_DIR__/5xr8_done.pdb
-loadcrd __PROJECT_DIR__/5xr8_done.pdb name edited
+parm __PROJECT_DIR__/receptor.pdb
+loadcrd __PROJECT_DIR__/receptor_done.pdb name edited
 prepareforleap crdset edited name from-prepareforleap \
 pdbout __PROJECT_DIR__/protein_fixed.pdb nowat noh
 go
