@@ -1,21 +1,11 @@
 &general
-
 startframe=500, endframe=5000, interval=5,
-
 strip_mask=":WAT,Cl-,Na+,K+,Cl,Na,K",
-
 verbose=2, keep_files=0,
-
 /
-
 &gb
-
 igb=2, saltcon=0.150,
-
 /
-
 &decomp
-
 idecomp=1, dec_verbose=1,
-
 /
