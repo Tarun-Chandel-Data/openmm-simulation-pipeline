@@ -84,14 +84,12 @@ Strips water and ions from the trajectory and re-images it, producing `nopbc.prm
 
 ## 7. Analysis
 
-**RMSD / RMSF** (`rmsF.py`):
+**RMSD / RMSF** (`rms.py`):
 ```bash
 python rms.py
 ```
 Loads `nopbc.prmtop` / `nopbc.xtc`. Aligns on protein, computes protein+ligand RMSD over time and per-residue RMSF. Edit `protein_indices` (`resid 0 to 286`) to match your receptor's actual residue range, and `ligand_indices` (`resname LIG`) to your ligand's residue name. Outputs `rmsd_500.png`, `rmsf_500.png`.
 
-<img width="10000" height="5000" alt="rmsf_500" src="https://github.com/user-attachments/assets/bd7edb51-2f16-4d4d-b692-eb7a18784bef" />
-<img width="6000" height="3000" alt="rmsd_500" src="https://github.com/user-attachments/assets/d339eff2-ae1d-4ec5-aba0-3368f98ea0cb" />
 
 
 **H-bond analysis** (`hbond_analysis.py`):
@@ -99,21 +97,45 @@ Loads `nopbc.prmtop` / `nopbc.xtc`. Aligns on protein, computes protein+ligand R
 python hbond_analysis.py
 ```
 Loads `nopbc.prmtop`/`nopbc.xtc` plus the original `complex.prmtop` (for correct residue numbering, since stripping shifts indices). Identifies ligand–protein H-bonds (Baker-Hubbard criterion), reports per-residue occupancy %, and plots interacting-residue counts over time plus the top 5 residue contact timelines. Outputs `hbond_replica_3.png`. Edit the `'LIG'` residue name check if your ligand uses a different code.
-<img width="12000" height="10000" alt="hbond_replica_3" src="https://github.com/user-attachments/assets/a7fd7029-3a93-46f2-9504-8a9e206f1f54" />
-
-
 
 **MM-GBSA binding free energy**:
+below command 288 is the number of resiude you ligand is, identify it by uploading any pdb in pymol to check its ligand residue number or Check by this command:
 ```bash
+cpptraj -p complex.prmtop <<EOF
+resinfo
+EOF
+| grep -iE "LIG|UNK|UNL"
+```
 
-MMPBSA.py -O -i mmgbsa.in -sp complex.prmtop -cp complex.prmtop -rp receptor.prmtop -lp ligand.prmtop -y *.dcd
+```bash
+ante-MMPBSA.py -p nopbc.prmtop -n ":288" -c mmgbsa_complex.prmtop -r mmgbsa_receptor.prmtop -l mmgbsa_ligand.prmtop -s ":WAT,Na+,Cl-,K+,CL,NA"
+#check the number of atoms QUALITY CHECK
+for f in complex.prmtop receptor.prmtop ligand.prmtop; do echo -n "$f: "; sed -n '7p' $f | awk '{print $1}'; done
+mpirun -np 12 MMPBSA.py.MPI -O -i mmgbsa.in \
+-o MMGBSA.dat \
+-do MMGBSA_decomp.dat \
+-sp nopbc.prmtop \
+-cp mmgbsa_complex.prmtop \
+-rp mmgbsa_receptor.prmtop \
+-lp mmgbsa_ligand.prmtop \
+-y nopbc.xtc
 ```
 
 ## Example Output
 
 Representative plots from a 500 ns production run (protein RMSD stabilizes ~1.5-2 Å, ligand RMSD ~0.7-1.2 Å; one flexible loop region shows RMSF >5 Å; ligand forms a dominant contact with ASP148, secondary with LYS35):
+RMSD:
+<img width="6000" height="3000" alt="rmsd_500" src="https://github.com/user-attachments/assets/e936ff65-6d06-48c8-846a-50ae8be1e7f9" />
 
-- `rmsd_500.png`, `rmsf_600.png`, `hbond_replica_3.png`
+RMSF:
+<img width="10000" height="5000" alt="rmsf_500" src="https://github.com/user-attachments/assets/6a1810ce-f409-41f1-a046-714b7f7df2cc" />
+
+H bond analysis:
+<img width="12000" height="10000" alt="hbond_replica_3" src="https://github.com/user-attachments/assets/ad00d804-5e55-49ee-9645-f6c5dc1e7f54" />
+
+
+
+
 
 ## What to Change for a New System
 
