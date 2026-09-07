@@ -99,6 +99,9 @@ Loads `nopbc.prmtop` / `nopbc.xtc`. Aligns on protein, computes protein+ligand R
 python hbond_analysis.py
 ```
 Loads `nopbc.prmtop`/`nopbc.xtc` plus the original `complex.prmtop` (for correct residue numbering, since stripping shifts indices). Identifies ligand–protein H-bonds (Baker-Hubbard criterion), reports per-residue occupancy %, and plots interacting-residue counts over time plus the top 5 residue contact timelines. Outputs `hbond_replica_3.png`. Edit the `'LIG'` residue name check if your ligand uses a different code.
+<img width="12000" height="10000" alt="hbond_replica_3" src="https://github.com/user-attachments/assets/a7fd7029-3a93-46f2-9504-8a9e206f1f54" />
+
+
 
 **MM-GBSA binding free energy**:
 ```bash
