@@ -1,6 +1,6 @@
 # MD Pipeline (OpenMM + AmberTools)
 
-MD pipeline for a small-molecule/protein system (PDB 5LQF, chain A), used to study binding stability of ligand **WTFA/LIG**. System prep via AmberTools (tleap, antechamber), simulation via OpenMM, analysis via MDTraj/cpptraj/MMPBSA.py.
+MD pipeline for a small-molecule/protein system, used to study binding stability of ligand **WTFA/LIG**. System prep via AmberTools (tleap, antechamber), simulation via OpenMM, analysis via MDTraj/cpptraj/MMPBSA.py.
 
 This repository contains **pipeline code only** — no trajectories, structures, or other simulation data are tracked (see `.gitignore`).
 
@@ -21,30 +21,10 @@ which tleap antechamber cpptraj
 ## 2. Ligand Parameterization (AM1-BCC / GAFF2)
 
 ```bash
-antechamber -i ligand.mol2 -fi mol2 -o WTFA_gaff2.mol2 -fo mol2 -c bcc -at gaff2 -rn WTFA
-parmchk2 -i WTFA_gaff2.mol2 -f mol2 -o WTFA.frcmod -s gaff2
+python paramatise.py
 ```
-Inspect/clean the mol2 file for duplicate bonds or atom naming issues if tleap complains later (see `check_mol2_*.py` helper scripts).
+Incorporate in it the prepare leap.in, packmol.in, and at last the tleap.in as a continuous process.
 
-## 3. System Build (tleap)
-
-```bash
-tleap -f tleap.in
-```
-
-`tleap.in` builds, in order:
-- `ligand.prmtop` / `ligand.inpcrd` — ligand alone
-- `receptor.prmtop` / `receptor.inpcrd` — receptor alone
-- `complex.prmtop` / `complex.inpcrd` — unsolvated complex (used only as a residue-numbering reference later, **not** for simulation)
-- `complex_solv.prmtop` / `complex_solv.inpcrd` — solvated (OPC water, truncated octahedron, 12 Å buffer), neutralized + ~0.15 M NaCl. **This is the pair actually used for simulation.**
-
-Before running, fill in the ion count: solvate first, check the log for the number of water residues added, then set
-```
-N_ions = round(0.15 * N_waters / 55.34)
-```
-and replace `<N>` in the `addIonsRand` lines.
-
-Edit for a new system: swap `receptor.pdb`, `WTFA_gaff2.mol2`, and `WTFA.frcmod` for your own receptor/ligand, and change the `WTFA` residue name throughout if your ligand uses a different code.
 
 ## 4. Equilibration (OpenMM)
 
