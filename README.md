@@ -105,7 +105,8 @@ Loads `nopbc.prmtop`/`nopbc.xtc` plus the original `complex.prmtop` (for correct
 
 **MM-GBSA binding free energy**:
 ```bash
-MMPBSA.py -O -i mmgbsa.in -sp complex_solv.prmtop -cp complex.prmtop -rp receptor.prmtop -lp ligand.prmtop -y *.dcd
+
+MMPBSA.py -O -i mmgbsa.in -sp complex.prmtop -cp complex.prmtop -rp receptor.prmtop -lp ligand.prmtop -y *.dcd
 ```
 
 ## Example Output
