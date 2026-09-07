@@ -3,7 +3,7 @@
 # (RMSF, RMSD, H-bond scripts expect nopbc.prmtop / nopbc.xtc)
 # Run with: cpptraj -i cpptraj.in > cpptraj.log
 
-parm complex.prmtop
+parm SYS_gaff2.prmtop
 trajin 500ns.dcd
 
 # Wrap molecules back into the primary unit cell / center on solute
