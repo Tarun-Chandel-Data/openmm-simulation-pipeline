@@ -6,9 +6,9 @@ from openmm.app import *
 from openmm.unit import *
 
 # --- Path Configuration ---
-workDir = '/home/tarun/sim/small_molecule/nsclc/5lqf_chaina/'
-top_path = os.path.join(workDir, "complex.prmtop")
-crd_path = os.path.join(workDir, "complex.inpcrd")
+workDir = '__PROJECT_DIR__'
+top_path = os.path.join(workDir, "SYS_gaff2.prmtop")
+crd_path = os.path.join(workDir, "SYS_gaff2.crd")
 equil_rst = os.path.join(workDir, "prot_lig_equil.rst")
 equil_pdb = os.path.join(workDir, "prot_lig_equil.pdb")
 equil_dcd = os.path.join(workDir, "prot_lig_equil.dcd")
