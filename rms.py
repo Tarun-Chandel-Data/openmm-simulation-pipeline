@@ -9,11 +9,11 @@ import os
 #path = get by pwd in your window paste it here inbetwwen 'path' below
 workDir = 'path'
 top_file = os.path.join(workDir, "complex.prmtop")
-traj_file = os.path.join(workDir, "500ns.dcd")
+traj_file = os.path.join(workDir, "nopbc.xtc")
 
 total_time_ns = 500  #define your simulation time here
 output_rmsd_img = "rmsd_500.png"
-output_rmsf_img = "rmsf_600.png"
+output_rmsf_img = "rmsf_500.png"
 
 # --------------------------
 # 2. LOADING & SELECTION
@@ -91,7 +91,7 @@ plt.ylabel("Fluctuation (Å)", fontsize=12)
 plt.xlim(unique_res[0], unique_res[-1])
 plt.grid(alpha=0.3)
 plt.tight_layout()
-plt.savefig(output_rmsf_img, dpi=1000)
+plt.savefig(output_rmsf_img, dpi=1000) #define the qualoty in therm of dpi, more quality more dpi
 print(f"> Saved RMSF plot: {output_rmsf_img}")
 
 plt.show()
