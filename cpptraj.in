@@ -1,0 +1,20 @@
+# ---- cpptraj.in ----
+# Strip water/ions and re-image the production trajectory for analysis
+# (RMSF, RMSD, H-bond scripts expect nopbc.prmtop / nopbc.xtc)
+# Run with: cpptraj -i cpptraj.in > cpptraj.log
+
+parm complex.prmtop
+trajin 500ns.dcd
+
+# Wrap molecules back into the primary unit cell / center on solute
+autoimage
+
+# Remove water and ions - keep only protein + ligand
+strip :WAT,Na+,Cl-
+
+# Write out the stripped trajectory and matching topology
+trajout nopbc.xtc
+outparm nopbc.prmtop
+
+run
+quit
