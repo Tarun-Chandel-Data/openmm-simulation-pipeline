@@ -14,9 +14,9 @@ State_file = 'prot_lig_equil.rst'
 Ligand_Force_field = "GAFF2"
 Jobname = '500ns'
 
-top = os.path.join(workDir, "complex.prmtop")
-crd = os.path.join(workDir, "complex.inpcrd")
-pdb = os.path.join(workDir, "complex.pdb")
+top = os.path.join(workDir, "SYS_gaff2.prmtop")
+crd = os.path.join(workDir, "SYS_gaff2.crd")
+pdb = os.path.join(workDir, "SYS.pdb")
 
 # --- Replica Configuration ---
 # Change REPLICA_ID to 1, 2, or 3 for each replicate run.
