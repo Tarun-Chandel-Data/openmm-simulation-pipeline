@@ -8,10 +8,10 @@ import os
 # --------------------------
 #path = get by pwd in your window paste it here inbetwwen 'path' below
 workDir = 'path'
-top_file = os.path.join(workDir, "nopbc.prmtop")
-traj_file = os.path.join(workDir, "nopbc.xtc")
+top_file = os.path.join(workDir, "complex.prmtop")
+traj_file = os.path.join(workDir, "500ns.dcd")
 
-total_time_ns = 500
+total_time_ns = 500  #define your simulation time here
 output_rmsd_img = "rmsd_500.png"
 output_rmsf_img = "rmsf_600.png"
 
@@ -23,7 +23,7 @@ t = md.load(traj_file, top=top_file)
 ref_t = t[0] # Reference is first frame
 
 # Select Protein (Residues 0-275) and Ligand (HETATM)
-protein_indices = t.topology.select("protein and resid 0 to 286")
+protein_indices = t.topology.select("protein and resid 0 to 300")
 ligand_indices = t.topology.select("resname LIG") # Adjust resname if different
 
 # --------------------------
