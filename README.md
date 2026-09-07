@@ -17,8 +17,13 @@ AmberTools provides `tleap`, `antechamber`, `sqm`, `sander`, `cpptraj` — requi
 ```bash
 which tleap antechamber cpptraj
 ```
+## 2. Change to user working directory
+```bash
+chmod +x setup_paths.sh
+./setup_paths.sh
+```
 
-## 2. Ligand Parameterization (AM1-BCC / GAFF2)
+## 3. Ligand Parameterisation (AM1-BCC / GAFF2)
 
 ```bash
 python paramatise.py
@@ -32,7 +37,7 @@ Incorporate in it the prepare leap.in, packmol.in, and at last the tleap.in as a
 python EQUILLIBRATION.py
 ```
 
-- Loads `complex_solv.prmtop` / `complex_solv.inpcrd`
+- Loads `SYS_gaff2.prmtop` / `SYS_gaff2.crd`
 - Two-stage minimization (stiff restraints, then relaxed restraints)
 - NVT warmup (1 ns) with position restraints on protein/ligand heavy atoms
 - NPT equilibration (1 ns), restraints released, barostat activated
@@ -46,7 +51,7 @@ Edit `NVT_Time_ns` / `NPT_Time_ns` / `Integration_timestep` at the top for a lon
 python PRODUCTION.py
 ```
 
-- Loads `complex_solv.prmtop` / `complex_solv.inpcrd`, resumes from `prot_lig_equil.rst`
+- Loads `SYS_gaff2.prmtop` / `SYS_gaff2.crd`, resumes from `prot_lig_equil.rst`
 - Uses Hydrogen Mass Repartitioning (3.0 amu) for a 4 fs timestep
 - Set `REPLICA_ID` (1, 2, or 3) before each run — controls the velocity-randomization seed so replicate trajectories diverge
 - Supports resuming/chunked runs via `Number_of_strides` (skips strides whose `.rst` file already exists)
@@ -68,7 +73,7 @@ Strips water and ions from the trajectory and re-images it, producing `nopbc.prm
 ```bash
 python rms.py
 ```
-Loads `nopbc.prmtop` / `nopbc.xtc`. Aligns on protein, computes protein+ligand RMSD over time and per-residue RMSF. Edit `protein_indices` (`resid 0 to 286`) to match your receptor's actual residue range, and `ligand_indices` (`resname LIG`) to your ligand's residue name. Outputs `rmsd_500.png`, `rmsf_500.png`.
+Loads `nopbc.prmtop` / `nopbc.xtc`. Aligns on protein, computes protein+ligand RMSD over time and per-residue RMSF. Edit `protein_indices` (`resid 0 to 300`) to match your receptor's actual residue range, and `ligand_indices` (`resname LIG`) to your ligand's residue name. Outputs `rmsd_500.png`, `rmsf_500.png`.
 
 
 
@@ -76,12 +81,12 @@ Loads `nopbc.prmtop` / `nopbc.xtc`. Aligns on protein, computes protein+ligand R
 ```bash
 python hbond_analysis.py
 ```
-Loads `nopbc.prmtop`/`nopbc.xtc` plus the original `complex.prmtop` (for correct residue numbering, since stripping shifts indices). Identifies ligand–protein H-bonds (Baker-Hubbard criterion), reports per-residue occupancy %, and plots interacting-residue counts over time plus the top 5 residue contact timelines. Outputs `hbond_replica_3.png`. Edit the `'LIG'` residue name check if your ligand uses a different code.
+Loads `nopbc.prmtop`/`nopbc.xtc` plus the original `SYS_gaff2.prmtop` (for correct residue numbering, since stripping shifts indices). Identifies ligand–protein H-bonds (Baker-Hubbard criterion), reports per-residue occupancy %, and plots interacting-residue counts over time plus the top 5 residue contact timelines. Outputs `hbond_replica.png`. Edit the `'LIG'` residue name check if your ligand uses a different code.
 
 **MM-GBSA binding free energy**:
 below command 288 is the number of resiude you ligand is, identify it by uploading any pdb in pymol to check its ligand residue number or Check by this command:
 ```bash
-cpptraj -p complex.prmtop <<EOF
+cpptraj -p SYS_gaff2.prmtop <<EOF
 resinfo
 EOF
 | grep -iE "LIG|UNK|UNL"
@@ -126,15 +131,13 @@ H bond analysis:
 
 | File | What to edit |
 |---|---|
-| `tleap.in` | Receptor PDB, ligand mol2/frcmod, ligand residue name, ion count `<N>` |
+| `tleap.in` | Receptor PDB, ligand mol2/frcmod, ligand residue name|
 | `EQUILLIBRATION.py` / `PRODUCTION.py` | `workDir` path, `Jobname`, simulation length/conditions |
 | `cpptraj.in` | `trajin` filename, strip mask if using different ion names |
-| `rmsF.py` | `protein_indices` residue range, `ligand_indices` residue name, `total_time_ns` |
+| `rms.py` | `protein_indices` residue range, `ligand_indices` residue name, `total_time_ns` |
 | `hbond_analysis.py` | ligand residue name (`'LIG'`) |
 | `mmgbsa.in` | receptor/ligand residue ranges matching your topology |
 
 ## Known Gotchas
 
 - `workDir` is hardcoded as an absolute path in `EQUILLIBRATION.py`/`PRODUCTION.py`/`rmsF.py` — update it to your own machine's path before running.
-- `complex.prmtop` (unsolvated) and `complex_solv.prmtop` (solvated) are **not interchangeable** — simulation scripts need the solvated pair; the H-bond script's residue-numbering reference needs the unsolvated one.
-- Large output files (trajectories, checkpoints, structures, logs, images) are excluded from version control via `.gitignore` by design.
