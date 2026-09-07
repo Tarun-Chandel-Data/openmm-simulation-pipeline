@@ -9,7 +9,7 @@ print("Loading trajectory...")
 traj = md.load(dcd, top=prmtop)
 
 # 1b. Load ORIGINAL topology for correct residue numbering
-orig_top = md.load_prmtop("complex.prmtop")
+orig_top = md.load_prmtop("SYS_gaff2.prmtop")
 
 # 2. Identify Ligand by Name (LIG)
 try:
