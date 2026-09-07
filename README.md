@@ -44,7 +44,7 @@ N_ions = round(0.15 * N_waters / 55.34)
 ```
 and replace `<N>` in the `addIonsRand` lines.
 
-Edit for a new system: swap `5lqf_fixed_receptor.pdb`, `WTFA_gaff2_cleaned.mol2`, and `WTFA.frcmod` for your own receptor/ligand, and change the `WTFA` residue name throughout if your ligand uses a different code.
+Edit for a new system: swap `receptor.pdb`, `WTFA_gaff2.mol2`, and `WTFA.frcmod` for your own receptor/ligand, and change the `WTFA` residue name throughout if your ligand uses a different code.
 
 ## 4. Equilibration (OpenMM)
 
