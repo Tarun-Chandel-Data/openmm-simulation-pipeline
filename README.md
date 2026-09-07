@@ -2,7 +2,8 @@
 
 MD pipeline for a small-molecule/protein system, used to study binding stability of ligand **WTFA/LIG**. System prep via AmberTools (tleap, antechamber), simulation via OpenMM, analysis via MDTraj/cpptraj/MMPBSA.py.
 
-This repository contains **pipeline code only** — no trajectories, structures, or other simulation data are tracked (see `.gitignore`).
+This repository contains **pipeline code only** — no trajectories, structures, or other simulation.
+
 
 ## 1. Environment Setup
 
@@ -17,6 +18,11 @@ AmberTools provides `tleap`, `antechamber`, `sqm`, `sander`, `cpptraj` — requi
 ```bash
 which tleap antechamber cpptraj
 ```
+
+## Firstly save the protein as receptor.pdb and ligand as ligand.pdb files separately.
+where u have saved these pdb files open that directory in termnal and confirm these by typing ls command to see the files and save these all *.in, *.inp, *.py files in same folder.
+
+
 ## 2. Change to user working directory
 ```bash
 chmod +x setup_paths.sh
