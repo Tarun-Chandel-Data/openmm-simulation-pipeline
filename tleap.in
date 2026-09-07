@@ -8,10 +8,10 @@ source leaprc.water.opc
 
 # Ligand force field parameters
 loadamberparams WTFA.frcmod
-WTFA = loadmol2 WTFA_gaff2_cleaned.mol2    #add your ligand file name
+WTFA = loadmol2 WTFA_gaff2.mol2    #add your ligand file name
 
 # Receptor
-rec = loadpdb 5lqf_fixed_receptor.pdb   #add your receptor name here
+rec = loadpdb xreceptor.pdb   #add your receptor name here
 
 # --- Ligand-only topology ---
 saveamberparm WTFA ligand.prmtop ligand.inpcrd
