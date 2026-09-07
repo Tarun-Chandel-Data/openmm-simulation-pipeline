@@ -1,0 +1,15 @@
+tolerance 2.0
+filetype pdb
+output __PROJECT_DIR__/solvated.pdb
+nloop 10
+
+structure __PROJECT_DIR__/protein_ligand.pdb
+  number 1
+  fixed -43.470 -146.690 299.734 0.0 0.0 0.0
+  centerofmass
+end structure
+
+structure __PROJECT_DIR__/water.pdb
+  number 14243
+  inside box -78.373 -191.590 262.026 -8.567 -101.789 337.442
+end structure
