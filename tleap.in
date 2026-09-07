@@ -1,0 +1,20 @@
+source leaprc.protein.ff19SB
+source leaprc.water.opc
+source leaprc.gaff2
+
+loadamberparams __PROJECT_DIR__/LIG.frcmod
+loadoff __PROJECT_DIR__/LIG.lib
+
+SYS = loadpdb __PROJECT_DIR__/solvated.pdb
+
+set SYS box { 69.806 89.801 75.416 }
+
+addIons2 SYS Na+ 0
+addIons2 SYS Cl- 0
+addIons2 SYS Na+ 30
+addIons2 SYS Cl- 30
+
+savepdb SYS __PROJECT_DIR__/SYS.pdb
+saveamberparm SYS __PROJECT_DIR__/SYS_gaff2.prmtop __PROJECT_DIR__/SYS_gaff2.crd
+
+quit
