@@ -13,7 +13,7 @@ import os, sys, subprocess, warnings
 warnings.filterwarnings("ignore")
 
 # ── USER CONFIG ───────────────────────────────────────────────────────────────
-workDir     = "/path"
+workDir     = "__PROJECT_DIR__"
 protein_pdb = "receptor.pdb"
 ligand_pdb  = "ligand.pdb"
 box_padding = 12.0
