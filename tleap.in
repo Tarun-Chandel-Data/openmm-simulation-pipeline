@@ -1,0 +1,48 @@
+# ---- tleap.in ----
+# Build script: ff19SB protein + GAFF2 ligand + OPC water, 0.15 M NaCl
+# Run with: tleap -f tleap.in > tleap.log
+
+source leaprc.protein.ff19SB
+source leaprc.gaff2
+source leaprc.water.opc
+
+# Ligand force field parameters
+loadamberparams WTFA.frcmod
+WTFA = loadmol2 WTFA_gaff2_cleaned.mol2    #add your ligand file name
+
+# Receptor
+rec = loadpdb 5lqf_fixed_receptor.pdb   #add your receptor name here
+
+# --- Ligand-only topology ---
+saveamberparm WTFA ligand.prmtop ligand.inpcrd
+
+# --- Receptor-only topology ---
+saveamberparm rec receptor.prmtop receptor.inpcrd
+
+# --- Complex (unsolvated) ---
+complex = combine { rec WTFA }
+saveamberparm complex complex.prmtop complex.inpcrd
+
+# --- Solvate complex in OPC water, 12 A buffer, truncated octahedron ---
+solvateOct complex OPCBOX 12.0
+
+# --- Neutralize first ---
+addIonsRand complex Na+ 0
+addIonsRand complex Cl- 0
+
+# --- Add extra NaCl for ~0.15 M ionic strength ---
+# NOTE: tleap has no built-in molarity calculator. After the solvateOct step,
+# check the log for "Total number of solute atoms" / "Total unitcells" or run:
+#   charge complex
+# to confirm net charge is 0, then find the number of water molecules added
+# (reported in the solvate step, e.g. "Added N residues.").
+# Approximate ion count for 0.15 M:  N_ions = 0.15 * N_waters / 55.34
+# Replace <N> below with that computed integer before running this section.
+addIonsRand complex Na+ <N>
+addIonsRand complex Cl- <N>
+
+# --- Save solvated complex ---
+saveamberparm complex complex_solv.prmtop complex_solv.inpcrd
+savepdb complex complex_solv.pdb
+
+quit
