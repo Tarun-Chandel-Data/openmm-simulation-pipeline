@@ -42,7 +42,7 @@ addIonsRand complex Na+ <N>
 addIonsRand complex Cl- <N>
 
 # --- Save solvated complex ---
-saveamberparm complex complex_solv.prmtop complex_solv.inpcrd
-savepdb complex complex_solv.pdb
+saveamberparm complex complex.prmtop complex.inpcrd
+savepdb complex complex.pdb
 
 quit
