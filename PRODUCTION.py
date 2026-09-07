@@ -8,7 +8,7 @@ from openmm.unit import *
 
 # --- Path Configuration ---
 #define path here by using pwd,/home/name/dir/dir/...
-workDir = 'path'
+workDir = '__PROJECT_DIR__'
 Equilibrated_PDB = 'prot_lig_equil.pdb'
 State_file = 'prot_lig_equil.rst'
 Ligand_Force_field = "GAFF2"
