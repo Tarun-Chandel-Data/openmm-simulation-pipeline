@@ -32,7 +32,7 @@ chmod +x setup_paths.sh
 ## 3. Ligand Parameterisation (AM1-BCC / GAFF2)
 
 ```bash
-python paramatise.py
+python parameterise.py
 ```
 Incorporate in it the prepare leap.in, packmol.in, and at last the tleap.in as a continuous process.
 
@@ -40,7 +40,7 @@ Incorporate in it the prepare leap.in, packmol.in, and at last the tleap.in as a
 ## 4. Equilibration (OpenMM)
 
 ```bash
-python EQUILLIBRATION.py
+python equilibration.py
 ```
 
 - Loads `SYS_gaff2.prmtop` / `SYS_gaff2.crd`
@@ -54,7 +54,7 @@ Edit `NVT_Time_ns` / `NPT_Time_ns` / `Integration_timestep` at the top for a lon
 ## 5. Production (OpenMM)
 
 ```bash
-python PRODUCTION.py
+python production.py
 ```
 
 - Loads `SYS_gaff2.prmtop` / `SYS_gaff2.crd`, resumes from `prot_lig_equil.rst`
