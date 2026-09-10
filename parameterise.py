@@ -285,7 +285,7 @@ if not os.path.exists(lig_h) or os.path.getsize(lig_h) == 0:
 run(
     f"antechamber -i {lig_h} -fi pdb "
     f"-o {lig_mol2} -fo mol2 "
-    f"-c gas -s 2 -nc {net_charge} -at gaff2 -rn LIG",
+    f"-c bcc -s 2 -nc {net_charge} -at gaff2 -rn LIG",
     "antechamber"
 )
 print(f"  Generated: LIG.mol2")
