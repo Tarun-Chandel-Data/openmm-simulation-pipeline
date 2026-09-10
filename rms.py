@@ -8,7 +8,7 @@ import os
 # --------------------------
 #path = get by pwd in your window paste it here inbetwwen 'path' below
 workDir = '__PROJECT_DIR__'
-top_file = os.path.join(workDir, "SYS_gaff2.prmtop")
+top_file = os.path.join(workDir, "nopbc.prmtop")
 traj_file = os.path.join(workDir, "nopbc.xtc")
 
 total_time_ns = 500  #define your simulation time here
