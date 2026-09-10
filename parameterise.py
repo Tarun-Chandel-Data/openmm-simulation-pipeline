@@ -281,7 +281,7 @@ if not os.path.exists(lig_h) or os.path.getsize(lig_h) == 0:
     print("  pdb4amber gave empty output, using original ligand PDB")
     lig_h = lig_in
 
-# antechamber with Gasteiger charges (fast, no QM)
+# antechamber with AM1-BCC charges
 run(
     f"antechamber -i {lig_h} -fi pdb "
     f"-o {lig_mol2} -fo mol2 "
