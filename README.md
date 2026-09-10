@@ -20,7 +20,7 @@ which tleap antechamber cpptraj
 ```
 
 ## Firstly save the protein as receptor.pdb and ligand as ligand.pdb files separately.
-where u have saved these pdb files open that directory in termnal and confirm these by typing ls command to see the files and save these all *.in, *.inp, *.py files in same folder.
+Save the protein as `receptor.pdb` and the ligand as `ligand.pdb`. Place them in the same folder as all `.py`, `.in`, and `.inp` files, and run every command from that folder.
 
 
 ## 2. Change to user working directory
@@ -90,7 +90,7 @@ python hbond_analysis.py
 Loads `nopbc.prmtop`/`nopbc.xtc` plus the original `SYS_gaff2.prmtop` (for correct residue numbering, since stripping shifts indices). Identifies ligand–protein H-bonds (Baker-Hubbard criterion), reports per-residue occupancy %, and plots interacting-residue counts over time plus the top 5 residue contact timelines. Outputs `hbond_replica.png`. Edit the `'LIG'` residue name check if your ligand uses a different code.
 
 **MM-GBSA binding free energy**:
-below command 288 is the number of resiude you ligand is, identify it by uploading any pdb in pymol to check its ligand residue number or Check by this command:
+Replace `288` in the command below with your ligand's residue number. Find it with:
 ```bash
 cpptraj -p SYS_gaff2.prmtop <<EOF
 resinfo
@@ -101,7 +101,7 @@ Put that residue number of ligand in place of 288 in below command
 ```bash
 ante-MMPBSA.py -p nopbc.prmtop -n ":288" -c mmgbsa_complex.prmtop -r mmgbsa_receptor.prmtop -l mmgbsa_ligand.prmtop -s ":WAT,Na+,Cl-,K+,CL,NA"
 ```
-Quality check: number of atoms in your liagnd cross check it.
+Quality check: confirm the atom count of each topology below matches your system.
 ```bash
 for f in complex.prmtop receptor.prmtop ligand.prmtop; do echo -n "$f: "; sed -n '7p' $f | awk '{print $1}'; done
 ```
