@@ -10,7 +10,7 @@ This repository contains **pipeline code only** — no trajectories, structures,
 ```bash
 conda create -n openmm_env python=3.11
 conda activate openmm_env
-conda install -c conda-forge ambertools=22
+conda install -c conda-forge ambertools=22 packmol openbabel
 pip install -r requirements.txt
 ```
 
