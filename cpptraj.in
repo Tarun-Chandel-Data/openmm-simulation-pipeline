@@ -4,7 +4,7 @@
 # Run with: cpptraj -i cpptraj.in > cpptraj.log
 
 parm SYS_gaff2.prmtop
-trajin 500ns.dcd
+trajin 500ns_rep1_1.dcd
 
 # Wrap molecules back into the primary unit cell / center on solute
 autoimage
