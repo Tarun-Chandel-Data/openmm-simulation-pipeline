@@ -97,7 +97,7 @@ resinfo
 EOF
 | grep -iE "LIG|UNK|UNL"
 ```
-Put that residue number of ligand in place of 288 in below command
+
 ```bash
 ante-MMPBSA.py -p nopbc.prmtop -n ":288" -c mmgbsa_complex.prmtop -r mmgbsa_receptor.prmtop -l mmgbsa_ligand.prmtop -s ":WAT,Na+,Cl-,K+,CL,NA"
 ```
@@ -105,7 +105,7 @@ Quality check: confirm the atom count of each topology below matches your system
 ```bash
 for f in complex.prmtop receptor.prmtop ligand.prmtop; do echo -n "$f: "; sed -n '7p' $f | awk '{print $1}'; done
 ```
-Multicore run: in this case running on 12 simultaneously, if you have less please decrease the 12 to 2-6 accordingly
+Run MM-GBSA in parallel. Set `-np 12` to the number of CPU cores available.
 ```bash
 mpirun -np 12 MMPBSA.py.MPI -O -i mmgbsa.in \
 -o MMGBSA.dat \
