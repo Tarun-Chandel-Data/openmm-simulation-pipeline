@@ -1,35 +1,53 @@
 #!/usr/bin/env python3
 """
-Generate manuscript figures from the data files, computing every quantity at
-run time. Nothing is hard-coded: scaffold membership, linker length, group
-means, correlations, distances and separations are all derived from the
-inputs, so the figures show whatever the data contains rather than what was
-expected.
+Plot what the pipeline output contains. Every quantity is computed at run time
+from the files given: scaffold membership, linker length, group means,
+correlations, distances, RMSDs and separations. No expected value, direction or
+conclusion is written into this script, and no test is one-sided, so a result
+that runs opposite to what was anticipated will be drawn and reported as such.
 
-Every number that appears on a figure is also printed to stdout and written to
-figure_values.txt, so the text of the manuscript can be checked against the
-figures.
+Every number that reaches a figure is also printed to stdout and written to
+figure_values.txt, so a figure can be checked against the table it came from.
+
+Start by seeing what is reachable and what is in it:
+
+    python make_manuscript_figures.py --inventory \
+        --root ~/docking_files/TEST/new --root ~/sim/small_molecule/cx
+
+That prints each table with its column names and each directory of conformer
+PDBs, and stops. Nothing is plotted and nothing is computed.
+
+Then let it locate the inputs itself and draw whatever it finds:
 
     python make_manuscript_figures.py \
-        --paired   chembl_ck2_paired.csv \
-        --dock     dock_paired/docking_results.xlsx \
-        --rescore  rescore_cd1.csv \
-        --anchor-a1 anchor_full_a1.csv --anchor-a2 anchor_full_a2.csv \
-        --ens-a1   ens_a1 --ens-a2 ens_a2 \
-        --scan     pharm_scan/scan_results.xlsx \
-        --outdir   figures
+        --root ~/docking_files/TEST/new --root ~/sim/small_molecule/cx \
+        --label-a1 "CK2a" --label-a2 "CK2a-prime" \
+        --outdir figures
 
-Inputs are optional individually; a figure is produced only if its inputs are
-present, and the script reports what it skipped and why. Figures map onto the
-Results sections as follows:
+Any input can be named explicitly instead, which overrides discovery:
 
-    Figure 1  3.1  selectivity within one scaffold tracks linker length
-    Figure 2  3.2  no docking-derived quantity correlated with measurement
-    Figure 3  3.3  the matched-pair series was ranked in the opposite order
-    Figure 4  3.4  scoring reproducibility exceeded the reference margin
-    Figure 5  3.5  the divergent hinge residues presented equivalent geometry
-    Figure 6  3.6  conformational ensembles of the two subunits overlapped
-    Figure 7  3.7  the divergent methyl was less accessible in CK2a'
+    --paired FILE --dock FILE --rescore FILE
+    --anchor-a1 FILE --anchor-a2 FILE
+    --ens-a1 DIR --ens-a2 DIR --scan FILE
+
+Inputs are optional individually. A figure is produced only if its inputs are
+present, and the script says what it skipped and why. What each figure plots:
+
+    Figure 1  selectivity against linker length, within the scaffold group that
+              the data itself selects (widest range, more than one length)
+    Figure 2  Spearman rho of every matched a1/a2 docking column against
+              measured selectivity, and what ranking on each would have picked
+    Figure 3  predicted difference against measured, for the Figure 1 members
+    Figure 4  affinity of one fixed pose across scoring models
+    Figure 5  anchor separation over each trajectory: time course, distribution,
+              and fraction of frames within a given distance
+    Figure 6  conformer RMSD within and between the two ensembles, and the
+              variance carried by the leading components
+    Figure 7  per-compound closest approach to one subunit's atom against the
+              other's, counted in both directions
+
+The subunit labels are only axis text: --label-a1 and --label-a2 set them and
+nothing else depends on them.
 """
 import argparse, glob, os, re, sys
 import numpy as np, pandas as pd
@@ -204,7 +222,7 @@ def core_scaffold(smiles):
 
 
 # ---------------------------------------------------------------- figure 1
-def figure_scaffold_sar(d, outdir, min_members, log):
+def figure_scaffold_sar(d, outdir, min_members, log, lab1="a1", lab2="a2"):
     d = d.copy()
     d["core"] = d.smiles.apply(core_scaffold)
     d["linker"] = d.smiles.apply(linker_length)
@@ -256,8 +274,16 @@ def figure_scaffold_sar(d, outdir, min_members, log):
     log.append(f"  gap between groups: {sep:+.3f} log units "
                f"({'no overlap' if sep > 0 else 'groups overlap'})")
     if len(lo) and len(hi):
-        u, p = mannwhitneyu(hi.selectivity_log, lo.selectivity_log, alternative="greater")
-        log.append(f"  Mann-Whitney U = {u:.0f} of {len(lo)*len(hi)}, one-sided p = {p:.4f}")
+        # two-sided: the direction of the shift is read off the data afterwards
+        # rather than assumed by the test
+        u, p = mannwhitneyu(hi.selectivity_log, lo.selectivity_log,
+                            alternative="two-sided")
+        direction = ("higher" if hi.selectivity_log.median() > lo.selectivity_log.median()
+                     else "lower" if hi.selectivity_log.median() < lo.selectivity_log.median()
+                     else "equal")
+        log.append(f"  Mann-Whitney U = {u:.0f} of {len(lo)*len(hi)}, "
+                   f"two-sided p = {p:.4f}")
+        log.append(f"  the at/above group sits {direction} than the below group")
 
     has_aff = {"p_value_a1", "p_value_a2"} <= set(g.columns)
     fig, axes = plt.subplots(1, 2 if has_aff else 1,
@@ -277,11 +303,11 @@ def figure_scaffold_sar(d, outdir, min_members, log):
     axA.axhline(0, color="black", lw=0.7, ls=":")
     axA.set_xticks(sorted(g.linker.unique()))
     axA.set_xlabel("Methylene units in linker")
-    axA.set_ylabel("Measured selectivity, log(CK2α′ − CK2α)")
+    axA.set_ylabel(f"Measured selectivity, log({lab2} − {lab1})")
     axA.set_title("A" if has_aff else "", loc="left", fontsize=10, weight="bold")
-    axA.text(0.98, 0.97, "CK2α′-preferring", transform=axA.transAxes,
+    axA.text(0.98, 0.97, f"{lab2}-preferring", transform=axA.transAxes,
              ha="right", va="top", fontsize=7.5, color=HL)
-    axA.text(0.98, 0.03, "CK2α-preferring", transform=axA.transAxes,
+    axA.text(0.98, 0.03, f"{lab1}-preferring", transform=axA.transAxes,
              ha="right", va="bottom", fontsize=7.5, color=GREY)
 
     if has_aff:
@@ -301,17 +327,17 @@ def figure_scaffold_sar(d, outdir, min_members, log):
                      fontsize=8, color=C_A1, weight="bold")
             axB.text(i+0.34, m2, f"{m2:.2f}", ha="left", va="center",
                      fontsize=8, color=C_A2, weight="bold")
-            log.append(f"  {lab}: mean pCK2α {m1:.2f}, mean pCK2α′ {m2:.2f}")
+            log.append(f"  {lab}: mean p{lab1} {m1:.2f}, mean p{lab2} {m2:.2f}")
         d1 = hi.p_value_a1.mean() - lo.p_value_a1.mean()
         d2 = hi.p_value_a2.mean() - lo.p_value_a2.mean()
-        log.append(f"  change across the split: CK2α {d1:+.2f}, CK2α′ {d2:+.2f}")
+        log.append(f"  change across the split: {lab1} {d1:+.2f}, {lab2} {d2:+.2f}")
         axB.set_xticks([0, 1])
         axB.set_xticklabels([f"< {cut} CH₂  (n = {len(lo)})",
                              f"≥ {cut} CH₂  (n = {len(hi)})"])
         axB.set_ylabel("pActivity")
         axB.set_xlim(-0.65, 1.65)
-        axB.legend(handles=[Line2D([], [], marker="o", ls="", color=C_A1, label="CK2α"),
-                            Line2D([], [], marker="o", ls="", color=C_A2, label="CK2α′")],
+        axB.legend(handles=[Line2D([], [], marker="o", ls="", color=C_A1, label=lab1),
+                            Line2D([], [], marker="o", ls="", color=C_A2, label=lab2)],
                    loc="lower left", frameon=False, fontsize=8)
         axB.set_title("B", loc="left", fontsize=10, weight="bold")
 
@@ -531,7 +557,8 @@ def figure_rescore_spread(path, outdir, log, ref_margin=None):
 
 
 # ---------------------------------------------------------------- figure 5
-def figure_anchor_distance(p_a1, p_a2, outdir, log, xtal=None, cutoff=HB_CUTOFF):
+def figure_anchor_distance(p_a1, p_a2, outdir, log, xtal=None, cutoff=HB_CUTOFF,
+                           lab1="a1", lab2="a2"):
     """Separation of the hydrogen-bonding anchors at the divergent hinge over the
     trajectories of each subunit: time course, distribution, and the fraction of
     frames within hydrogen-bonding range. Crystal values are drawn only if given
@@ -553,7 +580,7 @@ def figure_anchor_distance(p_a1, p_a2, outdir, log, xtal=None, cutoff=HB_CUTOFF)
                         src=os.path.basename(path))
     x_label = out["a1"]["xlabel"]
     log.append("\n=== FIGURE 5 : hinge anchor separation in dynamics ===")
-    for tag, lab in (("a1", "CK2α"), ("a2", "CK2α′")):
+    for tag, lab in (("a1", lab1), ("a2", lab2)):
         o = out[tag]
         frac = float((o["d"] <= cutoff).mean())
         o["frac"] = frac
@@ -563,15 +590,15 @@ def figure_anchor_distance(p_a1, p_a2, outdir, log, xtal=None, cutoff=HB_CUTOFF)
                    f"within {cutoff:.1f} A in {100*frac:.0f}% of frames")
     log.append(f"  difference in means: "
                f"{out['a2']['d'].mean() - out['a1']['d'].mean():+.2f} A "
-               f"(CK2α′ minus CK2α)")
+               f"({lab2} minus {lab1})")
     if xtal:
-        log.append(f"  crystal separations supplied: CK2α {xtal[0]:.2f} A, "
-                   f"CK2α′ {xtal[1]:.2f} A, difference "
+        log.append(f"  crystal separations supplied: {lab1} {xtal[0]:.2f} A, "
+                   f"{lab2} {xtal[1]:.2f} A, difference "
                    f"{xtal[1]-xtal[0]:+.2f} A")
 
     fig, (axA, axB, axC) = plt.subplots(1, 3, figsize=(8.4, 2.9),
                                         gridspec_kw={"width_ratios": [1.5, 1, 0.8]})
-    for tag, lab, col in (("a1", "CK2α", C_A1), ("a2", "CK2α′", C_A2)):
+    for tag, lab, col in (("a1", lab1, C_A1), ("a2", lab2, C_A2)):
         o = out[tag]
         axA.plot(o["t"], o["d"], color=col, lw=0.4, alpha=0.55)
         # running mean, window = 1% of the trajectory, so the trend is visible
@@ -606,7 +633,7 @@ def figure_anchor_distance(p_a1, p_a2, outdir, log, xtal=None, cutoff=HB_CUTOFF)
         axC.text(i, 100*f + 1.5, f"{100*f:.0f}%", ha="center", fontsize=8,
                  weight="bold")
     axC.set_xticks([0, 1])
-    axC.set_xticklabels(["CK2α", "CK2α′"])
+    axC.set_xticklabels([lab1, lab2])
     axC.set_ylabel(f"Frames within {cutoff:.1f} Å (%)")
     axC.set_ylim(0, max(100*max(fr) + 12, 20))
     axC.set_title("C", loc="left", fontsize=10, weight="bold")
@@ -674,7 +701,7 @@ def _pairwise(X, Y=None):
     return out + out.T if same else out
 
 
-def figure_ensemble_overlap(dir_a1, dir_a2, outdir, log):
+def figure_ensemble_overlap(dir_a1, dir_a2, outdir, log, lab1="a1", lab2="a2"):
     """Within-ensemble and between-ensemble conformer RMSD, plus the variance
     captured by the leading principal components of each ensemble. If the two
     distributions coincide, no weighting over conformers can separate the
@@ -701,11 +728,11 @@ def figure_ensemble_overlap(dir_a1, dir_a2, outdir, log):
     v1, v2, vc = w1[iu1], w2[iu2], cr.ravel()
 
     log.append("\n=== FIGURE 6 : conformational ensemble overlap ===")
-    log.append(f"  CK2α  {len(X1)} conformers from {dir_a1}")
-    log.append(f"  CK2α′ {len(X2)} conformers from {dir_a2}")
-    log.append(f"  within CK2α  : mean {v1.mean():.2f} A  "
+    log.append(f"  {lab1} {len(X1)} conformers from {dir_a1}")
+    log.append(f"  {lab2} {len(X2)} conformers from {dir_a2}")
+    log.append(f"  within {lab1} : mean {v1.mean():.2f} A  "
                f"min {v1.min():.2f}  max {v1.max():.2f}")
-    log.append(f"  within CK2α′ : mean {v2.mean():.2f} A  "
+    log.append(f"  within {lab2} : mean {v2.mean():.2f} A  "
                f"min {v2.min():.2f}  max {v2.max():.2f}")
     log.append(f"  between       : mean {vc.mean():.2f} A  "
                f"min {vc.min():.2f}  max {vc.max():.2f}")
@@ -732,8 +759,8 @@ def figure_ensemble_overlap(dir_a1, dir_a2, outdir, log):
     hi_b = max(v1.max(), v2.max(), vc.max())
     pad = 0.05 * (hi_b - lo_b or 1.0)
     bins = np.linspace(lo_b - pad, hi_b + pad, 34)
-    for v, lab, col in ((v1, f"within CK2α (mean {v1.mean():.2f} Å)", C_A1),
-                        (v2, f"within CK2α′ (mean {v2.mean():.2f} Å)", C_A2),
+    for v, lab, col in ((v1, f"within {lab1} (mean {v1.mean():.2f} Å)", C_A1),
+                        (v2, f"within {lab2} (mean {v2.mean():.2f} Å)", C_A2),
                         (vc, f"between (mean {vc.mean():.2f} Å)", GREY)):
         axA.hist(v, bins=bins, density=True, histtype="step", lw=1.6,
                  color=col, label=lab)
@@ -745,8 +772,8 @@ def figure_ensemble_overlap(dir_a1, dir_a2, outdir, log):
 
     k = min(10, len(scree["a1"]), len(scree["a2"]))
     x = np.arange(1, k+1)
-    axB.bar(x-0.19, 100*scree["a1"][:k], width=0.36, color=C_A1, label="CK2α")
-    axB.bar(x+0.19, 100*scree["a2"][:k], width=0.36, color=C_A2, label="CK2α′")
+    axB.bar(x-0.19, 100*scree["a1"][:k], width=0.36, color=C_A1, label=lab1)
+    axB.bar(x+0.19, 100*scree["a2"][:k], width=0.36, color=C_A2, label=lab2)
     axB.set_xticks(x)
     axB.set_xlabel("Principal component")
     axB.set_ylabel("Variance explained (%)")
@@ -761,10 +788,10 @@ def figure_ensemble_overlap(dir_a1, dir_a2, outdir, log):
 
 
 # ---------------------------------------------------------------- figure 7
-def figure_methyl_access(path, outdir, log, sheet=None):
-    """Per-compound reach of ligand carbon to the isoform-specific methyl:
-    CK2a' Ile117-CD1 against CK2a Val116-CG1. The sign of the difference is
-    counted over compounds and tested, so a single reversal would be visible."""
+def figure_methyl_access(path, outdir, log, sheet=None, lab1="a1", lab2="a2"):
+    """Per-compound reach of ligand carbon to the isoform-specific methyl, one
+    subunit against the other. Both directions are counted and the sign test is
+    two-sided, so whichever way the data falls is what the figure reports."""
     t = read_table(path, sheet)
     # distance and occupancy columns are matched by residue/atom name, so the
     # figure follows whatever the scan table actually recorded
@@ -781,19 +808,24 @@ def figure_methyl_access(path, outdir, log, sheet=None):
         log.append("figure 7 skipped: fewer than 3 compounds with both distances")
         return None
     diff = (sub[d2] - sub[d1]).to_numpy(float)
-    n_pos = int((diff > 0).sum()); n = len(diff)
-    bt = binomtest(n_pos, n, 0.5)
+    n_pos = int((diff > 0).sum())
+    n_neg = int((diff < 0).sum())
+    n = len(diff)
+    # two-sided: both directions are counted and reported, so a split or a
+    # reversal shows up rather than being absorbed by a one-sided alternative
+    bt = binomtest(n_pos, n, 0.5, alternative="two-sided")
 
     log.append(f"\n=== FIGURE 7 : reach to the divergent methyl, n = {n} compounds ===")
-    log.append(f"  CK2α′ column {d2}: median {sub[d2].median():.2f} Å")
-    log.append(f"  CK2α  column {d1}: median {sub[d1].median():.2f} Å")
-    log.append(f"  difference (CK2α′ − CK2α): mean {diff.mean():+.3f} Å, "
+    log.append(f"  {lab2} column {d2}: median {sub[d2].median():.2f} Å")
+    log.append(f"  {lab1} column {d1}: median {sub[d1].median():.2f} Å")
+    log.append(f"  difference ({lab2} − {lab1}): mean {diff.mean():+.3f} Å, "
                f"median {np.median(diff):+.3f}")
-    log.append(f"  positive in {n_pos} of {n} compounds "
-               f"(CK2α′ methyl further away); sign test p = {bt.pvalue:.2e}")
+    log.append(f"  {lab2} further: {n_pos} of {n} compounds; "
+               f"{lab1} further: {n_neg}; tied: {n - n_pos - n_neg}")
+    log.append(f"  sign test (two-sided) p = {bt.pvalue:.2e}")
     if o1 and o2:
-        log.append(f"  contact frequency: CK2α′ {sub[o2].mean():.3f} mean, "
-                   f"CK2α {sub[o1].mean():.3f} mean "
+        log.append(f"  contact frequency: {lab2} {sub[o2].mean():.3f} mean, "
+                   f"{lab1} {sub[o1].mean():.3f} mean "
                    f"({o2} vs {o1})")
 
     has_occ = bool(o1 and o2)
@@ -803,13 +835,25 @@ def figure_methyl_access(path, outdir, log, sheet=None):
     lim = [min(sub[d1].min(), sub[d2].min()) - 0.15,
            max(sub[d1].max(), sub[d2].max()) + 0.15]
     axA.plot(lim, lim, color="black", lw=0.8, ls=":")
-    axA.scatter(sub[d1], sub[d2], s=30, color=HL if n_pos == n else C_A2,
+    # points are coloured by which side of the diagonal they fall on, so a
+    # mixed result is visible as a mixed plot rather than one flat colour
+    side = np.where(diff > 0, HL, np.where(diff < 0, C_A1, GREY))
+    axA.scatter(sub[d1], sub[d2], s=30, c=side,
                 edgecolor="white", linewidth=0.5, zorder=3)
     axA.set_xlim(lim); axA.set_ylim(lim)
-    axA.set_xlabel("Closest ligand C to CK2α Val116-CG1 (Å)")
-    axA.set_ylabel("Closest ligand C to CK2α′ Ile117-CD1 (Å)")
-    axA.set_title(f"A   above the diagonal in {n_pos}/{n} (p = {bt.pvalue:.0e})",
-                  loc="left", fontsize=9, weight="bold")
+    axA.set_xlabel(f"{lab1}  {d1}  (Å)", fontsize=8)
+    axA.set_ylabel(f"{lab2}  {d2}  (Å)", fontsize=8)
+    axA.set_title("A   closest ligand-carbon approach", loc="left",
+                  fontsize=9, weight="bold")
+    # counts go inside the axes, where they cannot collide with panel B's title
+    for i, (txt, c) in enumerate((
+            (f"above diagonal ({lab2} further):  {n_pos}/{n}", HL),
+            (f"below diagonal ({lab1} further):  {n_neg}/{n}", C_A1),
+            (f"sign test (two-sided) p = {bt.pvalue:.1e}", "black"))):
+        axA.text(0.03, 0.97 - 0.07*i, txt, transform=axA.transAxes,
+                 fontsize=7, va="top", ha="left", color=c, weight="bold",
+                 bbox=dict(facecolor="white", alpha=0.75, edgecolor="none",
+                           pad=1.2), zorder=5)
 
     if has_occ:
         axB = axes[1]
@@ -822,11 +866,11 @@ def figure_methyl_access(path, outdir, log, sheet=None):
                      f"{scale*m:.1f}%" if scale == 100 else f"{m:.1f}",
                      ha="center", fontsize=8, weight="bold")
         axB.set_xticks([0, 1])
-        axB.set_xticklabels(["CK2α\nVal116-CG1", "CK2α′\nIle117-CD1"])
+        axB.set_xticklabels([f"{lab1}\n{o1}", f"{lab2}\n{o2}"], fontsize=7)
         axB.set_ylabel("Poses making the contact (%)" if scale == 100
                        else "Contact measure")
-        axB.set_title("B   the CK2α′ methyl is contacted less often",
-                      loc="left", fontsize=9, weight="bold")
+        axB.set_title("B   contact frequency", loc="left",
+                      fontsize=9, weight="bold")
 
     fig.tight_layout()
     p = os.path.join(outdir, "Figure7_methyl_accessibility.png")
@@ -834,20 +878,116 @@ def figure_methyl_access(path, outdir, log, sheet=None):
     return p
 
 
+# ------------------------------------------------------------- discovery
+TABLE_EXT = (".csv", ".tsv", ".xlsx", ".xls", ".xlsm")
+
+# Each entry is (attribute, list of regexes, kind). The first file whose path
+# matches every regex wins. Nothing here decides what a figure will show; it
+# only locates the file, and the figure still reads whatever is inside it.
+WANTED = [
+    ("paired",    [r"paired"],                          "table"),
+    ("dock",      [r"dock", r"result|score|best"],      "table"),
+    ("rescore",   [r"rescore"],                         "table"),
+    ("anchor_a1", [r"anchor", r"a1"],                   "table"),
+    ("anchor_a2", [r"anchor", r"a2"],                   "table"),
+    ("scan",      [r"scan|pharm"],                      "table"),
+    ("ens_a1",    [r"ens", r"a1"],                      "pdbdir"),
+    ("ens_a2",    [r"ens", r"a2"],                      "pdbdir"),
+]
+
+
+def walk_inputs(roots):
+    """Every table and every directory of PDB conformers under the roots."""
+    tables, pdbdirs = [], []
+    seen = set()
+    for root in roots:
+        root = os.path.expanduser(root)
+        if not os.path.isdir(root):
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [x for x in dirnames
+                           if not x.startswith(".") and x != "__pycache__"]
+            n_pdb = sum(1 for f in filenames if f.endswith((".pdb", ".pdb.gz")))
+            if n_pdb >= 2:
+                pdbdirs.append((dirpath, n_pdb))
+            for f in filenames:
+                if f.endswith(TABLE_EXT) and not f.startswith("~$"):
+                    p = os.path.join(dirpath, f)
+                    if p not in seen:
+                        seen.add(p)
+                        tables.append(p)
+    return sorted(tables), sorted(pdbdirs)
+
+
+def discover(a, log):
+    """Fill in any input the user did not name, from the roots. An input given
+    explicitly is never overridden."""
+    tables, pdbdirs = walk_inputs(a.root)
+    log.append(f"[scan] {len(tables)} table(s) and {len(pdbdirs)} conformer "
+               f"directory/ies under: {', '.join(a.root)}")
+    for attr, pats, kind in WANTED:
+        if getattr(a, attr, None):
+            continue                      # named on the command line, leave it
+        pool = tables if kind == "table" else [d for d, _ in pdbdirs]
+        hits = [p for p in pool
+                if all(re.search(x, os.path.basename(p).lower()
+                                 if kind == "table" else p.lower())
+                       for x in pats)]
+        if hits:
+            # shortest path wins: the least qualified name is usually the
+            # top-level product rather than an intermediate
+            best = min(hits, key=lambda p: (len(p), p))
+            setattr(a, attr, best)
+            log.append(f"[found] {attr:10s} -> {best}"
+                       + (f"   ({len(hits)} candidates)" if len(hits) > 1 else ""))
+        else:
+            log.append(f"[none ] {attr:10s} -> no match under the roots")
+    return log
+
+
+def inventory(roots):
+    """Print what is reachable and what is inside it, and stop. This is the
+    step to run first: it shows the column names the figures will be matched
+    against, without producing any figure or any number that could be mistaken
+    for a result."""
+    tables, pdbdirs = walk_inputs(roots)
+    print(f"# inventory of: {', '.join(roots)}")
+    print(f"# {len(tables)} table(s), {len(pdbdirs)} directory/ies of conformers\n")
+    for p in tables:
+        try:
+            t = read_table(p)
+        except Exception as e:
+            print(f"{p}\n    [unreadable] {e}\n")
+            continue
+        print(f"{p}")
+        print(f"    {len(t)} rows x {len(t.columns)} columns")
+        for c in t.columns:
+            kind = "num" if pd.api.types.is_numeric_dtype(t[c]) else "str"
+            print(f"      {kind}  {c}")
+        print()
+    for d, n in pdbdirs:
+        print(f"{d}\n    {n} PDB file(s)\n")
+    print("# nothing was plotted. Re-run without --inventory to make figures.")
+    return 0
+
+
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--paired", default="chembl_ck2_paired.csv",
-                    help="paired ChEMBL table (figures 1-3)")
-    ap.add_argument("--dock", default="dock_paired/docking_results.xlsx",
-                    help="docking results (figures 2-3)")
+    ap.add_argument("--paired", help="paired ChEMBL table (figures 1-3). "
+                                     "Found under --root if not given")
+    ap.add_argument("--dock", help="docking results (figures 2-3). "
+                                   "Found under --root if not given")
     ap.add_argument("--dock-sheet", default="best_wide")
     ap.add_argument("--min-members", type=int, default=4)
     ap.add_argument("--rescore", help="one row per scoring model, one fixed pose (figure 4)")
-    ap.add_argument("--ref-margin", default="0.24,0.25",
-                    help="pK separation of the published reference compounds, "
-                         "as low,high; pass '' to omit it from figure 4")
+    ap.add_argument("--ref-margin", default="",
+                    help="optional pK separation of the published reference "
+                         "compounds, as low,high. Omitted by default: it is a "
+                         "literature value, not something these files contain, "
+                         "so figure 4 shows only the measured spread unless "
+                         "you supply it")
     ap.add_argument("--anchor-a1", help="anchor separation over the CK2a trajectory")
     ap.add_argument("--anchor-a2", help="anchor separation over the CK2a' trajectory")
     ap.add_argument("--xtal", default="",
@@ -858,10 +998,34 @@ def main():
     ap.add_argument("--ens-a2", help="directory of CK2a' conformer PDBs (figure 6)")
     ap.add_argument("--scan", help="analogue scan table (figure 7)")
     ap.add_argument("--scan-sheet", default=None)
+    ap.add_argument("--root", action="append", default=[],
+                    help="a directory holding the pipeline output. Repeatable. "
+                         "Any input not named explicitly is looked for here, "
+                         "so pointing at your two working directories is "
+                         "usually enough")
+    ap.add_argument("--inventory", action="store_true",
+                    help="walk the roots, print every table found with its "
+                         "columns and every directory of conformer PDBs, then "
+                         "exit without plotting. Run this first to see what "
+                         "the script can reach and what it matched")
+    ap.add_argument("--label-a1", default="a1",
+                    help="axis label for the first subunit (e.g. CK2a)")
+    ap.add_argument("--label-a2", default="a2",
+                    help="axis label for the second subunit (e.g. CK2a')")
     ap.add_argument("--outdir", default="figures")
     a = ap.parse_args()
+
+    if a.inventory:
+        return inventory(a.root or ["."])
+
+    log_into = []
+    if a.root:
+        discover(a, log_into)
+    # fall back to the conventional names only when nothing else supplied them
+    a.paired = a.paired or "chembl_ck2_paired.csv"
+    a.dock = a.dock or "dock_paired/docking_results.xlsx"
     os.makedirs(a.outdir, exist_ok=True)
-    log, made = [], []
+    log, made = list(log_into), []
 
     def parse_pair(s):
         try:
@@ -894,7 +1058,8 @@ def main():
     g = cut = None
     if d is not None:
         try:
-            r1 = figure_scaffold_sar(d, a.outdir, a.min_members, log)
+            r1 = figure_scaffold_sar(d, a.outdir, a.min_members, log,
+                                     a.label_a1, a.label_a2)
         except ImportError:
             log.append("figures 1 and 3 skipped: need rdkit  (pip install rdkit)")
             r1 = None
@@ -929,7 +1094,8 @@ def main():
             log.append(f"figure 5 skipped: not found: {', '.join(missing)}")
         else:
             r = figure_anchor_distance(a.anchor_a1, a.anchor_a2, a.outdir, log,
-                                       parse_pair(a.xtal), a.hb_cutoff)
+                                       parse_pair(a.xtal), a.hb_cutoff,
+                                       a.label_a1, a.label_a2)
             if r:
                 made.append(r)
 
@@ -939,14 +1105,16 @@ def main():
         if missing:
             log.append(f"figure 6 skipped: not a directory: {', '.join(missing)}")
         else:
-            r = figure_ensemble_overlap(a.ens_a1, a.ens_a2, a.outdir, log)
+            r = figure_ensemble_overlap(a.ens_a1, a.ens_a2, a.outdir, log,
+                                        a.label_a1, a.label_a2)
             if r:
                 made.append(r)
 
     # ---- figure 7: methyl accessibility
     if a.scan:
         if os.path.exists(a.scan):
-            r = figure_methyl_access(a.scan, a.outdir, log, a.scan_sheet)
+            r = figure_methyl_access(a.scan, a.outdir, log, a.scan_sheet,
+                                     a.label_a1, a.label_a2)
             if r:
                 made.append(r)
         else:
