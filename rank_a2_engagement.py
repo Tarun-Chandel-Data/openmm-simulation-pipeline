@@ -25,7 +25,9 @@ plt.rcParams.update({
     "xtick.major.width": 0.6, "ytick.major.width": 0.6,
     "xtick.major.size": 2.5, "ytick.major.size": 2.5,
 })
-INK, HUE = "#1a1a1a", "#d1495b"
+INK = "#1a1a1a"
+# the validated diverging pair: one hue per subunit, used nowhere else
+C_A1, C_A2 = "#2e5eaa", "#d1495b"
 
 
 def main():
@@ -37,6 +39,14 @@ def main():
     p.add_argument("--affinity-col", default="a2_cnn")
     p.add_argument("--top", type=int, default=25)
     p.add_argument("--label", default="CK2α′")
+    p.add_argument("--label1", default="CK2α",
+                   help="name of the subunit the ranking is NOT on. Its values "
+                        "are carried beside the ranked ones, so a compound "
+                        "engaging both equally cannot be mistaken for one that "
+                        "prefers the ranked subunit")
+    p.add_argument("--no-compare", action="store_true",
+                   help="rank on the second subunit alone, without showing the "
+                        "first")
     p.add_argument("--dpi", type=int, default=1000)
     p.add_argument("--out", default="Figure_rank.png")
     a = p.parse_args()
@@ -53,6 +63,16 @@ def main():
         sys.exit(f"missing id column '{a.id_col}'")
 
     cols = [c for c, _ in keys]
+    # the same quantity for the other subunit, found by name. It never enters
+    # the ranking; it is shown so a compound that engages both equally cannot
+    # be mistaken for one that prefers the ranked subunit.
+    other = {}
+    if not a.no_compare:
+        for c in cols:
+            cand = c.replace("a2", "a1").replace("A2", "A1")
+            if cand != c and cand in d.columns and \
+                    pd.api.types.is_numeric_dtype(d[cand]):
+                other[c] = cand
     d = d.dropna(subset=cols).copy()
     # identifier last, so an otherwise complete tie is still reproducible
     ranked = d.sort_values(cols + [a.id_col],
@@ -68,9 +88,27 @@ def main():
     log.append(f"     {int((hb == hb.max()).sum())} compounds hold the maximum "
                f"of {hb.max():g}, ordered among themselves by {a.pose_col} "
                f"then {a.affinity_col}")
+    if other:
+        log.append(f"     showing alongside (not ranked on): "
+                   f"{', '.join(other.values())}")
+        for c, o in other.items():
+            dd = ranked[c] - ranked[o]
+            log.append(f"       {c} - {o}: median {dd.median():+.3f}, "
+                       f"{int((dd > 0).sum())} of {len(dd)} higher in {a.label}")
+    else:
+        log.append(f"     [note] no matching {a.label1} columns found, so the "
+                   f"ranking is shown without its counterpart")
+
     out_csv = os.path.splitext(a.out)[0] + "_ranking.csv"
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
-    ranked[["rank", a.id_col] + cols].to_csv(out_csv, index=False)
+    keep = ["rank", a.id_col]
+    for c in cols:
+        keep.append(c)
+        if c in other:
+            keep.append(other[c])
+            ranked["d_" + c] = ranked[c] - ranked[other[c]]
+            keep.append("d_" + c)
+    ranked[keep].to_csv(out_csv, index=False)
 
     log.append(f"\n  top {a.top}:")
     for _, r in ranked.head(a.top).iterrows():
@@ -87,28 +125,46 @@ def main():
                                           "wspace": 0.22})
     for ax, (col, title) in zip(axes, keys):
         v = sub[col].to_numpy(float)
-        integer = np.allclose(v, np.round(v))
-        # bars from zero for a count, which is a magnitude; a floating score
-        # sits on a scale that does not reach zero, so it is drawn as a point
-        # on its own range rather than a bar whose length would mislead
-        if integer and v.min() >= 0:
-            ax.barh(y, v, height=0.62, color=HUE, edgecolor="none")
-            ax.set_xlim(0, v.max() * 1.18)
+        w = sub[other[col]].to_numpy(float) if col in other else None
+        allv = v if w is None else np.concatenate([v, w])
+        integer = np.allclose(allv, np.round(allv))
+        # bars from zero for a count, which is a magnitude; a score on a scale
+        # that does not reach zero is a point on its own range, since a bar
+        # there would have to be cut and its length would mislead
+        if integer and allv.min() >= 0:
+            h = 0.36 if w is not None else 0.62
+            if w is not None:
+                ax.barh(y - h/2, w, height=h, color=C_A1, edgecolor="none")
+                ax.barh(y + h/2, v, height=h, color=C_A2, edgecolor="none")
+            else:
+                ax.barh(y, v, height=h, color=C_A2, edgecolor="none")
+            ax.set_xlim(0, allv.max() * 1.20)
             for yi, vi in zip(y, v):
-                ax.text(vi, yi, f" {vi:.0f}", va="center", ha="left",
-                        fontsize=6.5, color=INK)
+                ax.text(vi, yi + (h/2 if w is not None else 0), f" {vi:.0f}",
+                        va="center", ha="left", fontsize=6, color=INK)
         else:
-            ax.scatter(v, y, s=14, color=HUE, edgecolor="none", zorder=3)
-            pad = (v.max() - v.min() or 1.0) * 0.18
-            ax.set_xlim(v.min() - pad, v.max() + pad)
-            ax.grid(axis="x", color="#e8e8e8", lw=0.5, zorder=0)
+            if w is not None:
+                ax.hlines(y, np.minimum(v, w), np.maximum(v, w),
+                          color="#cfcfcf", lw=0.8, zorder=2)
+                ax.scatter(w, y, s=11, color=C_A1, edgecolor="none", zorder=3)
+            ax.scatter(v, y, s=11, color=C_A2, edgecolor="none", zorder=4)
+            pad = (allv.max() - allv.min() or 1.0) * 0.15
+            ax.set_xlim(allv.min() - pad, allv.max() + pad)
+            ax.grid(axis="x", color="#ececec", lw=0.5, zorder=0)
             ax.set_axisbelow(True)
         ax.set_title(title, loc="left", fontsize=8, pad=5)
         ax.tick_params(labelsize=6.5)
+
     axes[0].set_yticks(y)
     axes[0].set_yticklabels(sub[a.id_col].astype(str), fontsize=6)
     axes[0].set_ylim(-0.8, len(sub) - 0.2)
     axes[0].set_ylabel(f"Ranked by engagement of {a.label}", fontsize=7.5)
+    if other:
+        from matplotlib.patches import Patch
+        fig.legend(handles=[Patch(facecolor=C_A2, label=a.label),
+                            Patch(facecolor=C_A1, label=a.label1)],
+                   frameon=False, fontsize=7, ncol=2,
+                   loc="lower center", bbox_to_anchor=(0.5, -0.045))
 
     fig.savefig(a.out, dpi=a.dpi, bbox_inches="tight", pad_inches=0.12)
     plt.close(fig)
