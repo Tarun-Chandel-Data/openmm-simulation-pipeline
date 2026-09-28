@@ -384,50 +384,92 @@ def figure_scaffold_sar(d, outdir, min_members, log, lab1="a1", lab2="a2"):
 
 
 # ---------------------------------------------------------------- figure 2
-def figure_benchmark(paired, dock, outdir, log):
-    """Correlate every numeric column pair that looks like an a1/a2 quantity
-    with measured selectivity. Criteria are discovered from the columns
-    present, not specified in advance."""
+def benchmark_frame(paired, dock, bench, log):
+    """The table figure 2 correlates, and the name of its measured column.
+
+    Two shapes are accepted. A self-contained table already carries the
+    measured value and every criterion side by side, and is used as it stands.
+    Otherwise a paired activity table is joined to a docking table, and the
+    criteria are restricted to columns from the docking side, because the
+    paired table's own a1/a2 columns are the measured activities and
+    correlating them against their own difference would be circular."""
+    if bench is not None:
+        mcol = next((c for c in numeric_cols(bench)
+                     if re.search(r"^measured|selectivity", c.lower())
+                     and not re.search(r"pred|calc", c.lower())), None)
+        if mcol is None:
+            log.append("figure 2 skipped: the benchmark table has no measured "
+                       f"selectivity column. Numeric columns: "
+                       f"{numeric_cols(bench)[:14]}")
+            return None
+        return bench, mcol, set(bench.columns), "self-contained table"
+
+    if paired is None or dock is None:
+        log.append("figure 2 skipped: need either a benchmark table, or both a "
+                   "paired table and a docking table")
+        return None
     j = dock.merge(paired, left_on="cpd_id", right_on="chembl_id")
     if j.empty:
         log.append("figure 2 skipped: docking table and paired table share no compounds")
         return None
+    return j, "selectivity_log", set(dock.columns), "paired joined to docking"
 
-    # find matched a1/a2 column pairs, considering only columns that came from
-    # the docking table: a1/a2 columns of the paired table are the measured
-    # activities, and selectivity_log is their difference, so correlating them
-    # against it would be circular and would put a spurious bar on the figure
-    cols = list(j.columns)
-    from_dock = set(dock.columns)
+
+def figure_benchmark(paired, dock, outdir, log, bench=None):
+    """Correlate every numeric column pair that looks like an a1/a2 quantity
+    with measured selectivity. Criteria are discovered from the columns
+    present, not specified in advance."""
+    got = benchmark_frame(paired, dock, bench, log)
+    if got is None:
+        return None
+    j, mcol, allowed, how = got
+
     crits = {}
-    for c in cols:
-        if c not in from_dock:
+    for c in list(j.columns):
+        if c not in allowed or not pd.api.types.is_numeric_dtype(j[c]):
             continue
-        if not re.match(r"(.*)a1[_ ]?(isoform)?[_ ]?(.*)", c):
+        if not re.search(r"(^|[^a-z0-9])a1($|[^a-z0-9])", c.lower()):
             continue
-        cand = c.replace("a1_isoform", "a2_proteinA").replace("a1", "a2")
-        if cand in cols and pd.api.types.is_numeric_dtype(j[c]) \
-                and pd.api.types.is_numeric_dtype(j[cand]):
-            label = c.replace("a1_isoform_", "").replace("a1_", "")
+        cand = None
+        for alt in (c.replace("a1_isoform", "a2_proteinA"), c.replace("a1", "a2")):
+            if alt != c and alt in j.columns \
+                    and pd.api.types.is_numeric_dtype(j[alt]):
+                cand = alt
+                break
+        if cand:
+            label = (c.replace("a1_isoform_", "").replace("a1_", "")
+                     .replace("_a1", "").replace("a1", "").strip("_") or c)
             crits[label] = (cand, c)          # (a2 col, a1 col)
     if not crits:
         log.append("figure 2 skipped: no matched a1/a2 numeric columns found")
         return None
 
-    log.append(f"\n=== FIGURE 2 : benchmark, n = {len(j)} docked compounds ===")
-    log.append(f"measured selectivity spans {j.selectivity_log.min():+.2f} to "
-               f"{j.selectivity_log.max():+.2f}")
+    # a table may also carry the difference precomputed. Correlating both it
+    # and the pair it came from would draw the same criterion twice, so the
+    # precomputed one is named and left out.
+    dup = [c for c in numeric_cols(j)
+           if re.match(r"^(d_|delta_)", c.lower())
+           or c.lower().endswith("_diff")]
+
+    log.append(f"\n=== FIGURE 2 : benchmark, n = {len(j)} compounds ({how}) ===")
+    log.append(f"measured column '{mcol}' spans {j[mcol].min():+.2f} to "
+               f"{j[mcol].max():+.2f}")
+    if dup:
+        log.append(f"  precomputed difference column(s) not plotted separately: "
+                   f"{', '.join(dup)}")
     rows = []
     for label, (ca2, ca1) in sorted(crits.items()):
         delta = j[ca2] - j[ca1]
-        ok = delta.notna() & j.selectivity_log.notna()
+        ok = delta.notna() & j[mcol].notna()
         if ok.sum() < 10:
+            log.append(f"  {label:28s} skipped, only {ok.sum()} paired values")
             continue
-        r, p = spearmanr(delta[ok], j.selectivity_log[ok])
+        r, p = spearmanr(delta[ok], j[mcol][ok])
         # what a campaign acting on this ranking would have obtained
         k = min(20, ok.sum() // 3)
-        top = j.loc[delta.nlargest(k).index, "selectivity_log"].mean()
-        bot = j.loc[delta.nsmallest(k).index, "selectivity_log"].mean()
+        sub = delta[ok]
+        top = j.loc[sub.nlargest(k).index, mcol].mean()
+        bot = j.loc[sub.nsmallest(k).index, mcol].mean()
         rows.append(dict(criterion=label, rho=r, p=p, n=int(ok.sum()),
                          top=top, bot=bot, sep=top - bot))
         log.append(f"  {label:28s} rho {r:+.3f}  p {p:.3f}  n {ok.sum():3d}  "
@@ -588,6 +630,79 @@ def figure_rescore_spread(path, outdir, log, ref_margin=None):
                  loc="left", fontsize=9, weight="bold")
     fig.tight_layout()
     p = os.path.join(outdir, "Figure4_scoring_reproducibility.png")
+    fig.savefig(p); plt.close(fig)
+    return p
+
+
+def figure_affinity_dispersion(path, outdir, log, sheet=None,
+                               lab1="a1", lab2="a2", ref_margin=None):
+    """Per-compound dispersion of predicted affinity across the conformer
+    ensemble, for each subunit.
+
+    This is NOT model-to-model reproducibility. It is the spread a single
+    scoring model returns over the conformers of one receptor, which is a
+    different quantity and answers a different question: how much of the
+    predicted signal is ensemble noise. It is plotted against the size of the
+    difference the same table is being asked to resolve, so the two can be
+    compared on one axis."""
+    t = read_table(path, sheet)
+    sd = matched_a1a2(t, r"_sd$|_std$|stdev|dispersion")
+    mu = matched_a1a2(t, r"", exclude=(r"_sd$|_std$|stdev|n_|dmin|mw|qed",))
+    if sd is None:
+        log.append(f"figure 4 skipped: {path} has no matched a1/a2 dispersion "
+                   f"columns. Numeric columns: {numeric_cols(t)[:14]}")
+        return None
+    s1, s2 = sd
+    sub = t[[s1, s2]].dropna()
+    if len(sub) < 3:
+        log.append(f"figure 4 skipped: only {len(sub)} rows with both {s1} and {s2}")
+        return None
+
+    log.append(f"\n=== FIGURE 4 : affinity dispersion across the ensemble, "
+               f"n = {len(sub)} compounds ===")
+    log.append(f"  source {os.path.basename(path)}; columns {s1}, {s2}")
+    log.append(f"  NOTE this is spread over conformers of one receptor, not "
+               f"spread over scoring models")
+    for c, lab in ((s1, lab1), (s2, lab2)):
+        v = sub[c]
+        log.append(f"  {lab:10s} mean {v.mean():.3f}  median {v.median():.3f}  "
+                   f"min {v.min():.3f}  max {v.max():.3f}")
+    # the difference the table is being asked to resolve, where it is present
+    spread_ref = None
+    if mu:
+        m1, m2 = mu
+        dd = (t[m2] - t[m1]).dropna()
+        if len(dd):
+            spread_ref = float(dd.abs().median())
+            log.append(f"  median |{m2} − {m1}| = {spread_ref:.3f} "
+                       f"(the difference being resolved)")
+            log.append(f"  typical dispersion is "
+                       f"{(sub[s1].median()+sub[s2].median())/2/spread_ref:.2f}x "
+                       f"that difference")
+
+    fig, ax = plt.subplots(figsize=(4.6, 3.3))
+    bins = np.linspace(0, max(sub[s1].max(), sub[s2].max())*1.05, 30)
+    for c, lab, col in ((s1, lab1, C_A1), (s2, lab2, C_A2)):
+        ax.hist(sub[c], bins=bins, histtype="step", lw=1.6, color=col,
+                label=f"{lab} (median {sub[c].median():.3f})")
+        ax.axvline(sub[c].median(), color=col, lw=1.0, ls="--", alpha=0.7)
+    if spread_ref:
+        ax.axvline(spread_ref, color=HL, lw=1.6)
+        # annotate on whichever side of the line has room
+        right = spread_ref < (bins[-1] + bins[0]) / 2
+        ax.text(spread_ref + (0.01 if right else -0.01) * (bins[-1] - bins[0]),
+                ax.get_ylim()[1] * 0.55,
+                f"median difference\nbeing resolved\n{spread_ref:.3f}",
+                fontsize=7.5, color=HL, va="center",
+                ha="left" if right else "right", weight="bold",
+                bbox=dict(facecolor="white", alpha=0.8, edgecolor="none", pad=1.5))
+    ax.set_xlabel("Per-compound affinity dispersion across conformers (pK units)")
+    ax.set_ylabel("Compounds")
+    ax.legend(frameon=False, fontsize=8, loc="upper left")
+    ax.set_title("Ensemble dispersion of predicted affinity",
+                 loc="left", fontsize=9, weight="bold")
+    fig.tight_layout()
+    p = os.path.join(outdir, "Figure4_affinity_dispersion.png")
     fig.savefig(p); plt.close(fig)
     return p
 
@@ -965,7 +1080,8 @@ WANTED = [
     ("rescore",   [r"rescore"],                         "table"),
     ("anchor_a1", [r"anchor", r"a1"],                   "table"),
     ("anchor_a2", [r"anchor", r"a2"],                   "table"),
-    ("scan",      [r"interact|scan|pharm"],              "table"),
+    ("benchmark", [r"comparison|benchmark"],             "table"),
+    ("scan",      [r"interact|scan|pharm|rescored"],     "table"),
     ("ens_a1",    [r"ens", r"a1"],                      "pdbdir"),
     ("ens_a2",    [r"ens", r"a2"],                      "pdbdir"),
 ]
@@ -1099,7 +1215,16 @@ def main():
                                    "Found under --root if not given")
     ap.add_argument("--dock-sheet", default="best_wide")
     ap.add_argument("--min-members", type=int, default=4)
-    ap.add_argument("--rescore", help="one row per scoring model, one fixed pose (figure 4)")
+    ap.add_argument("--rescore",
+                    help="figure 4. Either one row per scoring model for one "
+                         "fixed pose (model-to-model spread), or a per-compound "
+                         "table with matched a1/a2 dispersion columns "
+                         "(ensemble dispersion). The shape is detected and the "
+                         "figure says which it drew")
+    ap.add_argument("--benchmark",
+                    help="figure 2: a single table already holding the measured "
+                         "value and every criterion side by side, used instead "
+                         "of joining --paired to --dock")
     ap.add_argument("--ref-margin", default="",
                     help="optional pK separation of the published reference "
                          "compounds, as low,high. Omitted by default: it is a "
@@ -1182,6 +1307,18 @@ def main():
     else:
         log.append(f"[warn] {a.dock} not found; figures 2 and 3 will be skipped")
 
+    benchtab = None
+    if a.benchmark:
+        if os.path.exists(a.benchmark):
+            try:
+                benchtab = read_table(a.benchmark)
+                log.append(f"[in] {len(benchtab)} rows from {a.benchmark} "
+                           f"(self-contained benchmark table)")
+            except Exception as e:
+                log.append(f"[warn] could not read {a.benchmark}: {e}")
+        else:
+            log.append(f"[warn] {a.benchmark} not found")
+
     g = cut = None
     if d is not None:
         try:
@@ -1193,21 +1330,30 @@ def main():
         if r1:
             made.append(r1[0]); g, cut = r1[1], r1[2]
 
-        if dock is not None:
-            r2 = figure_benchmark(d, dock, a.outdir, log)
-            if r2:
-                made.append(r2[0])
-                r2[1].to_csv(os.path.join(a.outdir, "Table1_benchmark.csv"), index=False)
-            if g is not None:
-                r3 = figure_matched_pairs(g, cut, dock, a.outdir, log)
-                if r3:
-                    made.append(r3)
+    # figure 2 needs either a self-contained benchmark table or both of the
+    # other two, so it is not nested inside the paired-table branch
+    if benchtab is not None or (d is not None and dock is not None):
+        r2 = figure_benchmark(d, dock, a.outdir, log, benchtab)
+        if r2:
+            made.append(r2[0])
+            r2[1].to_csv(os.path.join(a.outdir, "Table1_benchmark.csv"),
+                         index=False)
+
+    if g is not None and dock is not None:
+        r3 = figure_matched_pairs(g, cut, dock, a.outdir, log)
+        if r3:
+            made.append(r3)
 
     # ---- figure 4: scoring reproducibility
     if a.rescore:
         if os.path.exists(a.rescore):
             r = figure_rescore_spread(a.rescore, a.outdir, log,
                                       parse_pair(a.ref_margin))
+            if not r:
+                # not one-row-per-model; try the per-compound dispersion shape
+                r = figure_affinity_dispersion(a.rescore, a.outdir, log, None,
+                                               a.label_a1, a.label_a2,
+                                               parse_pair(a.ref_margin))
             if r:
                 made.append(r)
         else:
