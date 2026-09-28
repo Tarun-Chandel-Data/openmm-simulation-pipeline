@@ -171,6 +171,12 @@ def main():
                    help="minimum angle at a polar atom between its bonded "
                         "neighbour and its partner; rejects pairs that are "
                         "close but pointing away from each other")
+    p.add_argument("--match",
+                   help="only read pose files whose name contains this. A pose "
+                        "directory usually holds one file per compound PER "
+                        "RECEPTOR, and scoring a pose docked into one receptor "
+                        "against the other is meaningless, so the receptor's "
+                        "own files must be selected")
     p.add_argument("--tag", default="a1")
     p.add_argument("--out", default="hbond_geometry.csv")
     a = p.parse_args()
@@ -181,8 +187,14 @@ def main():
 
     files = ([a.poses] if a.poses.endswith(".sdf")
              else sorted(glob.glob(os.path.join(a.poses, "*.sdf"))))
+    n_all = len(files)
+    if a.match:
+        files = [f for f in files if a.match in os.path.basename(f)]
     if not files:
-        sys.exit(f"no sdf found at {a.poses}")
+        sys.exit(f"no sdf found at {a.poses}"
+                 + (f" matching '{a.match}'" if a.match else ""))
+    print(f"[in] {len(files)} pose file(s)"
+          + (f" of {n_all} matching '{a.match}'" if a.match else ""))
 
     rows, n_noprop = [], 0
     for f in files:
@@ -219,6 +231,23 @@ def main():
             f"{a.tag}_{a.select_by}": (None if best_v <= -1e8 else best_v),
             f"{a.tag}_n_poses_seen": sum(1 for _ in Chem.SDMolSupplier(f)),
         })
+
+    # one row per compound. More than one means the directory held several
+    # files for it, which for a pose directory normally means several
+    # receptors: the counts would then mix poses docked into different
+    # structures, so this is reported rather than silently averaged.
+    d0 = pd.DataFrame(rows)
+    if len(d0) and d0["cpd_id"].duplicated().any():
+        dup = int(d0["cpd_id"].duplicated().sum())
+        ex = d0.loc[d0["cpd_id"].duplicated(keep=False), "cpd_id"].unique()[:3]
+        print(f"[warn] {dup} duplicate compound row(s); {len(d0)} rows for "
+              f"{d0['cpd_id'].nunique()} compounds, e.g. {list(ex)}")
+        print(f"       a pose directory usually holds one file per compound "
+              f"per receptor. Use --match to take only this receptor's files, "
+              f"or the counts will mix the two.")
+        rows = (d0.sort_values(f"{a.tag}_n_hbond", ascending=False)
+                  .drop_duplicates("cpd_id").to_dict("records"))
+        print(f"       keeping the highest count per compound for now")
 
     if n_noprop:
         print(f"[warn] {n_noprop} pose(s) carried no '{a.select_by}' property; "
