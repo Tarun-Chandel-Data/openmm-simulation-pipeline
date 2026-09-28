@@ -143,7 +143,12 @@ def matched_a1a2(df, *patterns, exclude=()):
             continue
         if any(re.search(x, low) for x in exclude):
             continue
-        for cand in (c.replace("a1", "a2"), c.replace("A1", "A2")):
+        # the counterpart may carry a receptor name alongside the token, as
+        # a1_isoform / a2_proteinA does, so those spellings are tried too
+        for cand in (c.replace("a1_isoform", "a2_proteinA"),
+                     c.replace("a1", "a2"),
+                     c.replace("A1_isoform", "A2_proteinA"),
+                     c.replace("A1", "A2")):
             if cand != c and cand in cols \
                     and pd.api.types.is_numeric_dtype(df[cand]):
                 return c, cand
@@ -750,6 +755,191 @@ def figure_affinity_dispersion(path, outdir, log, sheet=None,
     return p
 
 
+# ------------------------------------------------- preference (figures 8, 9)
+def _preference_panel(ax, v, lab1, lab2, ylabel, fold=1.0,
+                      highlight=None, hl_label=None, title=None):
+    """One compound per bar, sorted by preference, signed so that each side of
+    zero is one subunit. Sorting is the whole point: it turns a set of numbers
+    into a profile, and shows at a glance how much of the set prefers either
+    subunit and by how much.
+
+    Returns the counts, so the caller logs the same numbers the figure shows."""
+    v = np.asarray(v, float)
+    order = np.argsort(v)
+    vs = v[order]
+    x = np.arange(len(vs))
+    ax.bar(x, vs, width=1.0, linewidth=0,
+           color=np.where(vs > 0, C_A2, np.where(vs < 0, C_A1, GREY)))
+    ax.axhline(0, color="black", lw=0.8)
+
+    n_a2 = int((vs > 0).sum()); n_a1 = int((vs < 0).sum())
+    n_tie = len(vs) - n_a2 - n_a1
+    strong2 = strong1 = None
+    if fold:
+        for s in (fold, -fold):
+            ax.axhline(s, color="black", lw=0.7, ls=":", alpha=0.6)
+        strong2 = int((vs >= fold).sum()); strong1 = int((vs <= -fold).sum())
+
+    if highlight is not None:
+        pos = int(np.where(order == highlight)[0][0])
+        ax.scatter([pos], [vs[pos]], s=46, facecolor="white",
+                   edgecolor="black", linewidth=1.3, zorder=6)
+        ax.annotate(hl_label or "reference",
+                    xy=(pos, vs[pos]),
+                    xytext=(pos, vs[pos] + 0.22*(vs.max()-vs.min() or 1)),
+                    ha="center", fontsize=7.5, weight="bold",
+                    arrowprops=dict(arrowstyle="-", lw=0.9, color="black"))
+
+    key = [(f"{lab2}-preferring:  {n_a2} of {len(vs)}", C_A2),
+           (f"{lab1}-preferring:  {n_a1} of {len(vs)}", C_A1)]
+    if n_tie:
+        key.append((f"no preference:  {n_tie}", GREY))
+    if fold:
+        key.append((f"beyond {fold:g} log unit:  {strong2} {lab2} / "
+                    f"{strong1} {lab1}", "black"))
+    for i, (txt, c) in enumerate(key):
+        ax.text(0.02, 0.97 - 0.075*i, txt, transform=ax.transAxes,
+                fontsize=7.5, va="top", ha="left", color=c, weight="bold",
+                bbox=dict(facecolor="white", alpha=0.8, edgecolor="none",
+                          pad=1.2), zorder=7)
+    ax.set_xlim(-1, len(vs))
+    ax.set_xlabel(f"Compounds, ranked ({len(vs)})")
+    ax.set_ylabel(ylabel)
+    if title:
+        ax.set_title(title, loc="left", fontsize=9, weight="bold")
+    return dict(n=len(vs), n_a2=n_a2, n_a1=n_a1, n_tie=n_tie,
+                strong2=strong2, strong1=strong1,
+                lo=float(vs.min()), hi=float(vs.max()))
+
+
+def figure_docked_preference(paired, dock, outdir, log, lab1="a1", lab2="a2"):
+    """Preference profile of the compounds that were both measured and docked:
+    what the measurement says, beside what the docking predicts, over the same
+    set. Neither panel is sorted by the other, so each shows its own profile."""
+    if paired is None or dock is None:
+        log.append("figure 8 skipped: needs both the paired table and the "
+                   "docking table")
+        return None
+    j = dock.merge(paired, left_on="cpd_id", right_on="chembl_id")
+    if j.empty:
+        log.append("figure 8 skipped: docking and paired tables share no compounds")
+        return None
+    meas = "selectivity_log" if "selectivity_log" in j.columns else None
+    pair = matched_a1a2(j, r"cnn") or matched_a1a2(j, r"affin|score|vina")
+    if meas is None and pair is None:
+        log.append("figure 8 skipped: no measured selectivity column and no "
+                   "matched a1/a2 prediction columns")
+        return None
+
+    log.append(f"\n=== FIGURE 8 : preference profile of the docked set ===")
+    log.append(f"  {len(j)} compounds present in both tables")
+    panels = []
+    if meas:
+        panels.append(("measured", j[meas].to_numpy(float),
+                       f"Measured  log({lab2} / {lab1})", 1.0))
+    if pair:
+        c1, c2 = pair
+        # the column names go in the log, not on the axis: spelled out they
+        # are long enough to be clipped
+        panels.append(("predicted", (j[c2] - j[c1]).to_numpy(float),
+                       f"Predicted  {lab2} − {lab1}", None))
+        log.append(f"  prediction taken as {c2} − {c1}")
+
+    fig, axes = plt.subplots(1, len(panels), figsize=(4.3*len(panels), 3.4))
+    axes = np.atleast_1d(axes)
+    for ax, (tag, v, ylab, fold), letter in zip(axes, panels, "AB"):
+        ok = np.isfinite(v)
+        st = _preference_panel(ax, v[ok], lab1, lab2, ylab, fold=fold,
+                               title=f"{letter}   {tag}")
+        log.append(f"  {tag}: {st['n_a2']} prefer {lab2}, {st['n_a1']} prefer "
+                   f"{lab1}, range {st['lo']:+.2f} to {st['hi']:+.2f} "
+                   f"(span {st['hi']-st['lo']:.2f})")
+        if st["strong2"] is not None:
+            log.append(f"    beyond tenfold: {st['strong2']} toward {lab2}, "
+                       f"{st['strong1']} toward {lab1}")
+    fig.tight_layout()
+    p = os.path.join(outdir, "Figure8_docked_preference.png")
+    fig.savefig(p); plt.close(fig)
+    return p
+
+
+def figure_variant_preference(path, outdir, log, sheet=None, lab1="a1",
+                              lab2="a2", id_pat=r"^EV", parent_id=None):
+    """Preference profile of one enumerated variant series. The series is
+    selected by an identifier pattern, and whatever does not match it is
+    treated as the reference compound the series was built from, so the series
+    can be read against its own starting point."""
+    t = read_table(path, sheet)
+    idc = next((c for c in t.columns
+                if not pd.api.types.is_numeric_dtype(t[c])
+                and re.search(r"cpd|compound|ligand|name|id$", c.lower())), None)
+    pair = (matched_a1a2(t, r"_cd$|cnn|affin")
+            or matched_a1a2(t, exclude=(r"_sd$|n_|dmin|mw|qed",)))
+    if pair is None:
+        log.append(f"figure 9 skipped: no matched a1/a2 prediction columns in "
+                   f"{path}. Numeric columns: {numeric_cols(t)[:14]}")
+        return None
+    c1, c2 = pair
+    v_all = (t[c2] - t[c1]).to_numpy(float)
+
+    if idc is None:
+        sel = np.ones(len(t), bool)
+        hl = None
+        log.append(f"  [figure 9] no identifier column; using all {len(t)} rows")
+    else:
+        ids = t[idc].astype(str)
+        sel = ids.str.contains(id_pat, case=False, regex=True).to_numpy()
+        if sel.sum() < 3:
+            log.append(f"figure 9 skipped: only {int(sel.sum())} rows match "
+                       f"'{id_pat}' in column '{idc}'. Sample ids: "
+                       f"{list(ids[:6])}")
+            return None
+        # the reference is what the series was enumerated from: the named row
+        # if given, else the rows that do not belong to the series
+        if parent_id:
+            outside = ids[ids.str.fullmatch(parent_id, case=False)].index
+        else:
+            outside = ids[~sel].index
+        hl = None
+        if len(outside) == 1:
+            # carry the reference into the plotted set and mark it
+            k = outside[0]
+            sel = sel.copy(); sel[t.index.get_loc(k)] = True
+            hl = int(np.where(np.flatnonzero(sel) == t.index.get_loc(k))[0][0])
+            log.append(f"  [figure 9] reference compound '{ids[k]}' included "
+                       f"and marked")
+        elif len(outside) > 1:
+            log.append(f"  [figure 9] {len(outside)} rows outside '{id_pat}' "
+                       f"were left out: {list(ids[outside][:6])}")
+
+    v = v_all[sel]
+    ok = np.isfinite(v)
+    v = v[ok]
+    if hl is not None and not ok.all():
+        hl = None                    # index no longer meaningful after masking
+    log.append(f"\n=== FIGURE 9 : preference profile of the variant series ===")
+    log.append(f"  {len(v)} compounds matching '{id_pat}' in "
+               f"{os.path.basename(path)}")
+    log.append(f"  preference taken as {c2} − {c1}")
+
+    fig, ax = plt.subplots(figsize=(5.0, 3.4))
+    st = _preference_panel(ax, v, lab1, lab2, f"Predicted  {lab2} − {lab1}",
+                           fold=None, highlight=hl, hl_label="parent",
+                           title="Variant series preference")
+    log.append(f"  {st['n_a2']} prefer {lab2}, {st['n_a1']} prefer {lab1}, "
+               f"{st['n_tie']} tied")
+    log.append(f"  range {st['lo']:+.3f} to {st['hi']:+.3f} "
+               f"(span {st['hi']-st['lo']:.3f})")
+    if hl is not None:
+        log.append(f"  parent sits at {v[hl]:+.3f}; "
+                   f"{int((v > v[hl]).sum())} variants exceed it toward {lab2}, "
+                   f"{int((v < v[hl]).sum())} toward {lab1}")
+    fig.tight_layout()
+    p = os.path.join(outdir, "Figure9_variant_preference.png")
+    fig.savefig(p); plt.close(fig)
+    return p
+
+
 # ---------------------------------------------------------------- figure 5
 def figure_anchor_distance(p_a1, p_a2, outdir, log, xtal=None, cutoff=HB_CUTOFF,
                            lab1="a1", lab2="a2", smooth=0):
@@ -1189,8 +1379,6 @@ WANTED = [
     ("paired",    [r"paired"],                          "table"),
     ("dock",      [r"dock", r"result|score|best"],      "table"),
     ("rescore",   [r"rescore"],                         "table"),
-    ("anchor_a1", [r"anchor", r"a1"],                   "table"),
-    ("anchor_a2", [r"anchor", r"a2"],                   "table"),
     ("benchmark", [r"comparison|benchmark"],             "table"),
     ("scan",      [r"interact|scan|pharm|rescored"],     "table"),
     ("ens_a1",    [r"ens", r"a1"],                      "pdbdir"),
@@ -1381,6 +1569,13 @@ def main():
                     help="axis label for the first subunit (e.g. CK2a)")
     ap.add_argument("--label-a2", default="a2",
                     help="axis label for the second subunit (e.g. CK2a')")
+    ap.add_argument("--ev-pattern", default=r"^EV",
+                    help="figure 9: regex selecting the variant series in the "
+                         "identifier column")
+    ap.add_argument("--parent-id",
+                    help="figure 9: identifier of the compound the series was "
+                         "enumerated from. Inferred from what does not match "
+                         "--ev-pattern when not given")
     ap.add_argument("--outdir", default="figures")
     a = ap.parse_args()
 
@@ -1510,6 +1705,21 @@ def main():
                 made.append(r)
         else:
             log.append(f"figure 7 skipped: {a.scan} not found")
+
+    # ---- figure 8: preference profile of the measured-and-docked set
+    if d is not None and dock is not None:
+        r = figure_docked_preference(d, dock, a.outdir, log,
+                                     a.label_a1, a.label_a2)
+        if r:
+            made.append(r)
+
+    # ---- figure 9: preference profile of the variant series
+    if a.scan and os.path.exists(a.scan):
+        r = figure_variant_preference(a.scan, a.outdir, log, a.scan_sheet,
+                                      a.label_a1, a.label_a2,
+                                      a.ev_pattern, a.parent_id)
+        if r:
+            made.append(r)
 
     print("\n".join(log))
     with open(os.path.join(a.outdir, "figure_values.txt"), "w") as f:
