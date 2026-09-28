@@ -341,10 +341,16 @@ def figure_scaffold_sar(d, outdir, min_members, log, lab1="a1", lab2="a2"):
     axA.set_xlabel("Methylene units in linker")
     axA.set_ylabel(f"Measured selectivity, log({lab2} − {lab1})")
     axA.set_title("A" if has_aff else "", loc="left", fontsize=10, weight="bold")
-    axA.text(0.98, 0.97, f"{lab2}-preferring", transform=axA.transAxes,
-             ha="right", va="top", fontsize=7.5, color=HL)
-    axA.text(0.98, 0.03, f"{lab1}-preferring", transform=axA.transAxes,
-             ha="right", va="bottom", fontsize=7.5, color=GREY)
+    # headroom first, so the orientation labels sit clear of the points
+    _lo, _hi = axA.get_ylim()
+    _pad = 0.13 * (_hi - _lo)
+    axA.set_ylim(_lo - _pad, _hi + _pad)
+    axA.text(0.99, 0.985, f"{lab2}-preferring", transform=axA.transAxes,
+             ha="right", va="top", fontsize=7.5, color=HL,
+             bbox=dict(facecolor="white", alpha=0.8, edgecolor="none", pad=1.2))
+    axA.text(0.99, 0.015, f"{lab1}-preferring", transform=axA.transAxes,
+             ha="right", va="bottom", fontsize=7.5, color=GREY,
+             bbox=dict(facecolor="white", alpha=0.8, edgecolor="none", pad=1.2))
 
     if has_aff:
         axB = axes[1]
@@ -359,10 +365,16 @@ def figure_scaffold_sar(d, outdir, min_members, log, lab1="a1", lab2="a2"):
             m1, m2 = sub.p_value_a1.mean(), sub.p_value_a2.mean()
             axB.hlines(m1, i-0.30, i-0.02, color=C_A1, lw=2.4, zorder=4)
             axB.hlines(m2, i+0.02, i+0.30, color=C_A2, lw=2.4, zorder=4)
-            axB.text(i-0.34, m1, f"{m1:.2f}", ha="right", va="center",
-                     fontsize=8, color=C_A1, weight="bold")
-            axB.text(i+0.34, m2, f"{m2:.2f}", ha="left", va="center",
-                     fontsize=8, color=C_A2, weight="bold")
+            # centred above each mean line rather than beside it: side-by-side
+            # labels from adjacent groups collide whenever the two means are
+            # close, which is exactly the case worth reading
+            _yr = (sub[["p_value_a1", "p_value_a2"]].to_numpy().max()
+                   - sub[["p_value_a1", "p_value_a2"]].to_numpy().min()) or 1.0
+            for _x, _m, _c in ((i-0.16, m1, C_A1), (i+0.16, m2, C_A2)):
+                axB.text(_x, _m + 0.05*_yr, f"{_m:.2f}", ha="center",
+                         va="bottom", fontsize=8, color=_c, weight="bold",
+                         bbox=dict(facecolor="white", alpha=0.85,
+                                   edgecolor="none", pad=1.0), zorder=6)
             log.append(f"  {lab}: mean p{lab1} {m1:.2f}, mean p{lab2} {m2:.2f}")
         d1 = hi.p_value_a1.mean() - lo.p_value_a1.mean()
         d2 = hi.p_value_a2.mean() - lo.p_value_a2.mean()
@@ -725,6 +737,7 @@ def figure_anchor_distance(p_a1, p_a2, outdir, log, xtal=None, cutoff=HB_CUTOFF,
     if not (p_a1 and p_a2):
         log.append("figure 5 skipped: need both --anchor-a1 and --anchor-a2")
         return None
+    log.append("\n=== FIGURE 5 : hinge anchor separation in dynamics ===")
     out = {}
     for tag, path in (("a1", p_a1), ("a2", p_a2)):
         t = read_table(path)
@@ -738,7 +751,23 @@ def figure_anchor_distance(p_a1, p_a2, outdir, log, xtal=None, cutoff=HB_CUTOFF,
         out[tag] = dict(t=tv[ok], d=v[ok], col=c, xlabel=tlab,
                         src=os.path.basename(path))
     x_label = out["a1"]["xlabel"]
-    log.append("\n=== FIGURE 5 : hinge anchor separation in dynamics ===")
+
+    # A time column whose whole span is a tiny number is not in the unit its
+    # name claims. Plotting it puts an exponent on the axis and invites the
+    # span to be misread, so fall back to the frame index and say why.
+    span = max(o["t"].max() - o["t"].min() for o in out.values())
+    if 0 < span < 1e-2:
+        log.append(f"  warning: the time column spans only {span:.3g} over "
+                   f"{len(out['a1']['t'])} frames. That is not nanoseconds; "
+                   f"check the unit written by the analysis script. Plotting "
+                   f"frame index instead")
+        for o in out.values():
+            o["t"] = np.arange(len(o["d"]), dtype=float)
+        x_label = "Frame"
+    else:
+        for tag, o in out.items():
+            log.append(f"  {tag} time spans {o['t'].min():.3g} to "
+                       f"{o['t'].max():.3g} over {len(o['t'])} frames")
     for tag, lab in (("a1", lab1), ("a2", lab2)):
         o = out[tag]
         frac = float((o["d"] <= cutoff).mean())
