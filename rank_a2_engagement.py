@@ -44,6 +44,13 @@ def main():
                         "are carried beside the ranked ones, so a compound "
                         "engaging both equally cannot be mistaken for one that "
                         "prefers the ranked subunit")
+    p.add_argument("--rank-on", choices=["absolute", "delta"],
+                   default="absolute",
+                   help="absolute ranks on the second subunit's values, which "
+                        "measures engagement with it. delta ranks on the "
+                        "difference from the first subunit, which measures "
+                        "preference between them: a compound that bonds "
+                        "heavily to everything no longer wins for being sticky")
     p.add_argument("--min-pose", type=float,
                    help="drop compounds whose pose score is below this before "
                         "ranking. Precedence is strict, so without a floor one "
@@ -88,15 +95,29 @@ def main():
     else:
         log_pre = None
     # identifier last, so an otherwise complete tie is still reproducible
-    ranked = d.sort_values(cols + [a.id_col],
-                           ascending=[False]*len(cols) + [True],
+    sort_on = list(cols)
+    if a.rank_on == "delta":
+        if not other:
+            sys.exit("--rank-on delta needs the first subunit's columns; "
+                     "none were found by name")
+        if len(other) < len(cols):
+            missing_o = [c for c in cols if c not in other]
+            sys.exit("--rank-on delta needs a counterpart for every key; "
+                     f"none found for: {', '.join(missing_o)}")
+        sort_on = []
+        for c in cols:
+            k = "d_" + c
+            d[k] = d[c] - d[other[c]]
+            sort_on.append(k)
+    ranked = d.sort_values(sort_on + [a.id_col],
+                           ascending=[False]*len(sort_on) + [True],
                            kind="mergesort").reset_index(drop=True)
     ranked.insert(0, "rank", np.arange(1, len(ranked) + 1))
 
     log = [f"[in] {n_raw} compounds from {a.table}"] + \
           ([log_pre] if log_pre else []) + \
           [
-           f"     precedence: {a.hbond_col} > {a.pose_col} > {a.affinity_col}"]
+           f"     ranking on: {' > '.join(sort_on)}"]
     hb = ranked[a.hbond_col]
     log.append(f"     {a.hbond_col}: {hb.min():g} to {hb.max():g}, "
                f"median {hb.median():g}")
@@ -134,6 +155,11 @@ def main():
         show.append((c, fmt))
         if c in other:
             show.append((other[c], fmt))
+            # in delta mode the difference is the key, so it is printed beside
+            # the two values it comes from rather than left to be worked out
+            if a.rank_on == "delta":
+                show.append(("d_" + c, "{:+g}" if fmt == "{:g}" else
+                             "{:+.3f}" if fmt == "{:.3f}" else "{:+.2f}"))
     widths = [max(len(c), 8) for c, _ in show]
     log.append("")
     log.append("  " + "rank  " + f"{'compound':16s}"
