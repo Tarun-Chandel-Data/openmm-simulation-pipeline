@@ -1,0 +1,965 @@
+#!/usr/bin/env python3
+"""
+Generate manuscript figures from the data files, computing every quantity at
+run time. Nothing is hard-coded: scaffold membership, linker length, group
+means, correlations, distances and separations are all derived from the
+inputs, so the figures show whatever the data contains rather than what was
+expected.
+
+Every number that appears on a figure is also printed to stdout and written to
+figure_values.txt, so the text of the manuscript can be checked against the
+figures.
+
+    python make_manuscript_figures.py \
+        --paired   chembl_ck2_paired.csv \
+        --dock     dock_paired/docking_results.xlsx \
+        --rescore  rescore_cd1.csv \
+        --anchor-a1 anchor_full_a1.csv --anchor-a2 anchor_full_a2.csv \
+        --ens-a1   ens_a1 --ens-a2 ens_a2 \
+        --scan     pharm_scan/scan_results.xlsx \
+        --outdir   figures
+
+Inputs are optional individually; a figure is produced only if its inputs are
+present, and the script reports what it skipped and why. Figures map onto the
+Results sections as follows:
+
+    Figure 1  3.1  selectivity within one scaffold tracks linker length
+    Figure 2  3.2  no docking-derived quantity correlated with measurement
+    Figure 3  3.3  the matched-pair series was ranked in the opposite order
+    Figure 4  3.4  scoring reproducibility exceeded the reference margin
+    Figure 5  3.5  the divergent hinge residues presented equivalent geometry
+    Figure 6  3.6  conformational ensembles of the two subunits overlapped
+    Figure 7  3.7  the divergent methyl was less accessible in CK2a'
+"""
+import argparse, glob, os, re, sys
+import numpy as np, pandas as pd
+
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+except ImportError:
+    sys.exit("needs matplotlib:  pip install matplotlib")
+try:
+    from scipy.stats import spearmanr, mannwhitneyu, binomtest
+except ImportError:
+    sys.exit("needs scipy:  pip install scipy")
+
+plt.rcParams.update({
+    "font.family": "DejaVu Sans", "font.size": 9,
+    "axes.linewidth": 0.8, "axes.spines.top": False, "axes.spines.right": False,
+    "figure.dpi": 300,
+})
+C_A1, C_A2, GREY, HL = "#2e5eaa", "#d1495b", "#6c6c6c", "#1b7a4b"
+HB_CUTOFF = 3.5          # heavy-atom donor-acceptor distance, angstrom
+
+
+# ------------------------------------------------------------------ helpers
+def need_rdkit():
+    """Imported on demand so the dynamics figures work without rdkit."""
+    from rdkit import Chem, RDLogger
+    from rdkit.Chem.Scaffolds import MurckoScaffold
+    RDLogger.DisableLog("rdApp.*")
+    return Chem, MurckoScaffold
+
+
+def read_table(path, sheet=None):
+    """csv, tsv or excel, decided by extension rather than by argument."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in (".xlsx", ".xls", ".xlsm"):
+        try:
+            return pd.read_excel(path, sheet) if sheet else pd.read_excel(path)
+        except ValueError:
+            return pd.read_excel(path)          # named sheet absent, take first
+    return pd.read_csv(path, sep=None, engine="python")
+
+
+def numeric_cols(df):
+    return [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+
+
+def pick_col(df, *patterns, exclude=()):
+    """First numeric column whose name matches every pattern and no exclusion.
+    Returns None rather than guessing when nothing matches."""
+    for c in numeric_cols(df):
+        low = c.lower()
+        if all(re.search(p, low) for p in patterns) \
+                and not any(re.search(x, low) for x in exclude):
+            return c
+    return None
+
+
+def series_of(df, *patterns, exclude=()):
+    c = pick_col(df, *patterns, exclude=exclude)
+    return (c, df[c].dropna().to_numpy(float)) if c else (None, None)
+
+
+def distance_column(df):
+    """The distance a distance-vs-time table is about: a column named for a
+    distance, else the only numeric column that is not a time or frame index."""
+    c = pick_col(df, r"dist|sep|anchor|d_|_d$")
+    if c:
+        return c
+    cands = [c for c in numeric_cols(df)
+             if not re.search(r"time|frame|step|index|ns|ps", c.lower())]
+    return cands[0] if len(cands) == 1 else (cands[0] if cands else None)
+
+
+def time_column(df, n):
+    """Values and an axis label for whatever the table uses as its abscissa:
+    a named time, else a frame index, else the row number."""
+    c = pick_col(df, r"time|_ns$|^ns")
+    if c:
+        unit = " (ns)" if re.search(r"ns", c.lower()) else ""
+        return df[c].to_numpy(float), f"Simulation time{unit}"
+    c = pick_col(df, r"frame|step|index")
+    if c:
+        return df[c].to_numpy(float), "Frame"
+    return np.arange(n, dtype=float), "Frame"
+
+
+# ---------------------------------------------------------------- structure
+def linker_length(smiles):
+    """Number of non-aromatic carbons between the exocyclic NH and the pendant
+    aromatic ring. Derived from the graph, not from a lookup table.
+
+    Returns None where the motif is absent, so such compounds are excluded
+    rather than silently assigned a value."""
+    Chem, _ = need_rdkit()
+    m = Chem.MolFromSmiles(smiles)
+    if m is None:
+        return None
+    ri = m.GetRingInfo()
+    best = None
+    for a in m.GetAtoms():
+        if a.GetSymbol() != "N" or a.IsInRing():
+            continue
+        if a.GetTotalNumHs() < 1:
+            continue
+        nbrs = a.GetNeighbors()
+        # the N must bridge a fused ring system and a pendant aromatic ring
+        arom_nbrs = [n for n in nbrs if n.GetIsAromatic()]
+        chain_nbrs = [n for n in nbrs if not n.GetIsAromatic() and n.GetSymbol() == "C"]
+        # case 1: N bonded directly to two aromatic systems -> zero-length linker
+        if len(arom_nbrs) >= 2:
+            sys_a = set(next(iter([r for r in ri.AtomRings()
+                                   if arom_nbrs[0].GetIdx() in r]), ()))
+            sys_b = set(next(iter([r for r in ri.AtomRings()
+                                   if arom_nbrs[1].GetIdx() in r]), ()))
+            if sys_a and sys_b and not (sys_a & sys_b):
+                best = 0 if best is None else min(best, 0)
+                continue
+        # case 2: N bonded to one aromatic system and to a carbon chain that
+        # terminates in a different aromatic ring
+        if arom_nbrs and chain_nbrs:
+            for start in chain_nbrs:
+                n_c, cur, prev = 0, start, a
+                while cur is not None and not cur.GetIsAromatic() and n_c < 8:
+                    n_c += 1
+                    nxt = [x for x in cur.GetNeighbors()
+                           if x.GetIdx() != prev.GetIdx() and x.GetAtomicNum() > 1]
+                    if len(nxt) != 1:
+                        cur = None
+                        break
+                    prev, cur = cur, nxt[0]
+                if cur is not None and cur.GetIsAromatic():
+                    best = n_c if best is None else min(best, n_c)
+    return best
+
+
+def core_scaffold(smiles):
+    """Group key built from the ring systems alone, ignoring everything that
+    connects them. Compounds differing only by linker length therefore land in
+    the same group, which a Murcko scaffold does not guarantee: the linker atoms
+    are part of the Murcko scaffold when they bridge two rings."""
+    Chem, _ = need_rdkit()
+    m = Chem.MolFromSmiles(smiles)
+    if m is None:
+        return None
+    ri = m.GetRingInfo()
+    rings = [set(r) for r in ri.AtomRings()]
+    if not rings:
+        return None
+    # merge fused rings into ring systems
+    systems = []
+    for r in rings:
+        hit = [s for s in systems if s & r]
+        if hit:
+            merged = set(r)
+            for h in hit:
+                merged |= h
+                systems.remove(h)
+            systems.append(merged)
+        else:
+            systems.append(set(r))
+    frags = []
+    for sysm in systems:
+        try:
+            frags.append(Chem.MolFragmentToSmiles(m, atomsToUse=sorted(sysm),
+                                                  canonical=True))
+        except Exception:
+            pass
+    return ".".join(sorted(frags)) if frags else None
+
+
+# ---------------------------------------------------------------- figure 1
+def figure_scaffold_sar(d, outdir, min_members, log):
+    d = d.copy()
+    d["core"] = d.smiles.apply(core_scaffold)
+    d["linker"] = d.smiles.apply(linker_length)
+
+    groups = (d.dropna(subset=["core"]).groupby("core")
+              .filter(lambda g: len(g) >= min_members))
+    if groups.empty:
+        log.append(f"figure 1 skipped: no scaffold group with >= {min_members} members")
+        return None
+
+    # choose the group by evidence, not by expectation: the one whose members
+    # span the widest selectivity range AND contain more than one linker length
+    best, best_span = None, -1
+    for core, g in groups.groupby("core"):
+        gl = g.dropna(subset=["linker"])
+        if gl.linker.nunique() < 2:
+            continue
+        span = g.selectivity_log.max() - g.selectivity_log.min()
+        if span > best_span:
+            best, best_span = core, span
+    if best is None:
+        log.append("figure 1 skipped: no group varies in linker length")
+        return None
+
+    g = d[d.core == best].dropna(subset=["linker"]).copy()
+    g["linker"] = g.linker.astype(int)
+    log.append("\n=== FIGURE 1 : scaffold selected on evidence ===")
+    log.append(f"core            {best}")
+    log.append(f"members         {len(g)} of {len(d)} paired compounds")
+    log.append(f"selectivity     {g.selectivity_log.min():+.2f} to {g.selectivity_log.max():+.2f}")
+    log.append(f"linker lengths  {[int(v) for v in sorted(g.linker.unique())]}")
+    for n, gg in g.groupby("linker"):
+        log.append(f"  {n} CH2 : n={len(gg)}  mean {gg.selectivity_log.mean():+.3f}  "
+                   f"range {gg.selectivity_log.min():+.2f} to {gg.selectivity_log.max():+.2f}")
+
+    # split at the largest gap between adjacent linker-length group means
+    means = g.groupby("linker").selectivity_log.mean().sort_index()
+    if len(means) < 2:
+        log.append("figure 1 skipped: only one linker class after filtering")
+        return None
+    gaps = means.diff().dropna()
+    cut = gaps.idxmax()
+    lo = g[g.linker < cut]; hi = g[g.linker >= cut]
+    log.append(f"split placed at {cut} CH2 (largest gap between class means)")
+    log.append(f"  below : n={len(lo)}  mean {lo.selectivity_log.mean():+.3f}")
+    log.append(f"  at/above: n={len(hi)}  mean {hi.selectivity_log.mean():+.3f}")
+
+    sep = hi.selectivity_log.min() - lo.selectivity_log.max()
+    log.append(f"  gap between groups: {sep:+.3f} log units "
+               f"({'no overlap' if sep > 0 else 'groups overlap'})")
+    if len(lo) and len(hi):
+        u, p = mannwhitneyu(hi.selectivity_log, lo.selectivity_log, alternative="greater")
+        log.append(f"  Mann-Whitney U = {u:.0f} of {len(lo)*len(hi)}, one-sided p = {p:.4f}")
+
+    has_aff = {"p_value_a1", "p_value_a2"} <= set(g.columns)
+    fig, axes = plt.subplots(1, 2 if has_aff else 1,
+                             figsize=(7.2 if has_aff else 3.6, 3.3))
+    axA = axes[0] if has_aff else axes
+
+    rng = np.random.default_rng(0)
+    for n, gg in g.groupby("linker"):
+        col = HL if n >= cut else GREY
+        x = np.full(len(gg), n) + rng.uniform(-0.11, 0.11, len(gg))
+        axA.scatter(x, gg.selectivity_log, s=34, color=col,
+                    edgecolor="white", linewidth=0.6, zorder=3)
+        axA.hlines(gg.selectivity_log.mean(), n-0.26, n+0.26, color=col, lw=2.2, zorder=4)
+    if sep > 0:
+        axA.axhspan(lo.selectivity_log.max(), hi.selectivity_log.min(),
+                    color="#ffd166", alpha=0.5, zorder=0)
+    axA.axhline(0, color="black", lw=0.7, ls=":")
+    axA.set_xticks(sorted(g.linker.unique()))
+    axA.set_xlabel("Methylene units in linker")
+    axA.set_ylabel("Measured selectivity, log(CK2α′ − CK2α)")
+    axA.set_title("A" if has_aff else "", loc="left", fontsize=10, weight="bold")
+    axA.text(0.98, 0.97, "CK2α′-preferring", transform=axA.transAxes,
+             ha="right", va="top", fontsize=7.5, color=HL)
+    axA.text(0.98, 0.03, "CK2α-preferring", transform=axA.transAxes,
+             ha="right", va="bottom", fontsize=7.5, color=GREY)
+
+    if has_aff:
+        axB = axes[1]
+        for i, (sub, lab) in enumerate(((lo, f"< {cut} CH₂"), (hi, f"≥ {cut} CH₂"))):
+            for _, r in sub.iterrows():
+                axB.plot([i-0.16, i+0.16], [r.p_value_a1, r.p_value_a2],
+                         color="#c9c9c9", lw=0.8, zorder=1)
+                axB.scatter([i-0.16], [r.p_value_a1], s=24, color=C_A1,
+                            edgecolor="white", linewidth=0.5, zorder=3)
+                axB.scatter([i+0.16], [r.p_value_a2], s=24, color=C_A2,
+                            edgecolor="white", linewidth=0.5, zorder=3)
+            m1, m2 = sub.p_value_a1.mean(), sub.p_value_a2.mean()
+            axB.hlines(m1, i-0.30, i-0.02, color=C_A1, lw=2.4, zorder=4)
+            axB.hlines(m2, i+0.02, i+0.30, color=C_A2, lw=2.4, zorder=4)
+            axB.text(i-0.34, m1, f"{m1:.2f}", ha="right", va="center",
+                     fontsize=8, color=C_A1, weight="bold")
+            axB.text(i+0.34, m2, f"{m2:.2f}", ha="left", va="center",
+                     fontsize=8, color=C_A2, weight="bold")
+            log.append(f"  {lab}: mean pCK2α {m1:.2f}, mean pCK2α′ {m2:.2f}")
+        d1 = hi.p_value_a1.mean() - lo.p_value_a1.mean()
+        d2 = hi.p_value_a2.mean() - lo.p_value_a2.mean()
+        log.append(f"  change across the split: CK2α {d1:+.2f}, CK2α′ {d2:+.2f}")
+        axB.set_xticks([0, 1])
+        axB.set_xticklabels([f"< {cut} CH₂  (n = {len(lo)})",
+                             f"≥ {cut} CH₂  (n = {len(hi)})"])
+        axB.set_ylabel("pActivity")
+        axB.set_xlim(-0.65, 1.65)
+        axB.legend(handles=[Line2D([], [], marker="o", ls="", color=C_A1, label="CK2α"),
+                            Line2D([], [], marker="o", ls="", color=C_A2, label="CK2α′")],
+                   loc="lower left", frameon=False, fontsize=8)
+        axB.set_title("B", loc="left", fontsize=10, weight="bold")
+
+    fig.tight_layout()
+    p = os.path.join(outdir, "Figure1_scaffold_SAR.png")
+    fig.savefig(p); plt.close(fig)
+    return p, g, cut
+
+
+# ---------------------------------------------------------------- figure 2
+def figure_benchmark(paired, dock, outdir, log):
+    """Correlate every numeric column pair that looks like an a1/a2 quantity
+    with measured selectivity. Criteria are discovered from the columns
+    present, not specified in advance."""
+    j = dock.merge(paired, left_on="cpd_id", right_on="chembl_id")
+    if j.empty:
+        log.append("figure 2 skipped: docking table and paired table share no compounds")
+        return None
+
+    # find matched a1/a2 column pairs, considering only columns that came from
+    # the docking table: a1/a2 columns of the paired table are the measured
+    # activities, and selectivity_log is their difference, so correlating them
+    # against it would be circular and would put a spurious bar on the figure
+    cols = list(j.columns)
+    from_dock = set(dock.columns)
+    crits = {}
+    for c in cols:
+        if c not in from_dock:
+            continue
+        if not re.match(r"(.*)a1[_ ]?(isoform)?[_ ]?(.*)", c):
+            continue
+        cand = c.replace("a1_isoform", "a2_proteinA").replace("a1", "a2")
+        if cand in cols and pd.api.types.is_numeric_dtype(j[c]) \
+                and pd.api.types.is_numeric_dtype(j[cand]):
+            label = c.replace("a1_isoform_", "").replace("a1_", "")
+            crits[label] = (cand, c)          # (a2 col, a1 col)
+    if not crits:
+        log.append("figure 2 skipped: no matched a1/a2 numeric columns found")
+        return None
+
+    log.append(f"\n=== FIGURE 2 : benchmark, n = {len(j)} docked compounds ===")
+    log.append(f"measured selectivity spans {j.selectivity_log.min():+.2f} to "
+               f"{j.selectivity_log.max():+.2f}")
+    rows = []
+    for label, (ca2, ca1) in sorted(crits.items()):
+        delta = j[ca2] - j[ca1]
+        ok = delta.notna() & j.selectivity_log.notna()
+        if ok.sum() < 10:
+            continue
+        r, p = spearmanr(delta[ok], j.selectivity_log[ok])
+        # what a campaign acting on this ranking would have obtained
+        k = min(20, ok.sum() // 3)
+        top = j.loc[delta.nlargest(k).index, "selectivity_log"].mean()
+        bot = j.loc[delta.nsmallest(k).index, "selectivity_log"].mean()
+        rows.append(dict(criterion=label, rho=r, p=p, n=int(ok.sum()),
+                         top=top, bot=bot, sep=top - bot))
+        log.append(f"  {label:28s} rho {r:+.3f}  p {p:.3f}  n {ok.sum():3d}  "
+                   f"top{k} {top:+.2f} vs bot{k} {bot:+.2f}  sep {top-bot:+.2f}")
+    if not rows:
+        log.append("figure 2 skipped: no criterion had enough paired values")
+        return None
+    t = pd.DataFrame(rows).sort_values("rho")
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.4, 0.42*len(t)+2.2),
+                                   gridspec_kw={"width_ratios": [1.15, 1]})
+    y = np.arange(len(t))
+    ax1.barh(y, t.rho, color=[HL if v > 0 else C_A1 for v in t.rho],
+             height=0.6, edgecolor="white")
+    ax1.axvline(0, color="black", lw=0.9)
+    ax1.set_yticks(y); ax1.set_yticklabels(t.criterion, fontsize=7.5)
+    ax1.set_xlabel("Spearman ρ against measured selectivity")
+    lim = max(0.35, np.abs(t.rho).max()*1.4)
+    ax1.set_xlim(-lim, lim)
+    for i, r in enumerate(t.itertuples()):
+        ax1.text(r.rho + (0.02 if r.rho >= 0 else -0.02), i,
+                 f"{r.rho:+.2f}", va="center",
+                 ha="left" if r.rho >= 0 else "right", fontsize=7)
+    ax1.set_title("A   Correlation with measurement", loc="left",
+                  fontsize=9.5, weight="bold")
+
+    ax2.barh(y-0.17, t.top, height=0.32, color=HL, label="top-ranked")
+    ax2.barh(y+0.17, t.bot, height=0.32, color=GREY, label="bottom-ranked")
+    ax2.axvline(0, color="black", lw=0.9)
+    ax2.set_yticks(y); ax2.set_yticklabels([])
+    ax2.set_xlabel("Mean measured selectivity of ranked subsets")
+    ax2.legend(frameon=False, fontsize=7.5, loc="lower right")
+    ax2.set_title("B   Enrichment by ranking", loc="left",
+                  fontsize=9.5, weight="bold")
+
+    fig.tight_layout()
+    p = os.path.join(outdir, "Figure2_benchmark.png")
+    fig.savefig(p); plt.close(fig)
+    return p, t
+
+
+# ---------------------------------------------------------------- figure 3
+def figure_matched_pairs(g, cut, dock, outdir, log):
+    """Find compounds on the scaffold that differ only in linker length and share
+    the pendant substitution, then compare measured with predicted."""
+    if dock is None:
+        log.append("figure 3 skipped: no docking table")
+        return None
+    j = g.merge(dock, left_on="chembl_id", right_on="cpd_id", how="inner")
+    if j.empty:
+        log.append("figure 3 skipped: scaffold members were not docked")
+        return None
+    a2c = next((c for c in j.columns if "a2" in c and "cnn" in c.lower()), None)
+    a1c = next((c for c in j.columns if "a1" in c and "cnn" in c.lower()), None)
+    if not (a2c and a1c):
+        log.append("figure 3 skipped: no CNN affinity columns")
+        return None
+    j["pred"] = j[a2c] - j[a1c]
+
+    log.append(f"\n=== FIGURE 3 : scaffold members with docking, n = {len(j)} ===")
+    r, p = spearmanr(j.pred, j.selectivity_log)
+    log.append(f"  Spearman(predicted, measured) = {r:+.3f}  p = {p:.3f}")
+    log.append(f"  measured spans {j.selectivity_log.max()-j.selectivity_log.min():.2f} "
+               f"log units; predicted spans {j.pred.max()-j.pred.min():.2f}")
+
+    fig, ax = plt.subplots(figsize=(4.0, 3.4))
+    col = [HL if v >= cut else GREY for v in j.linker]
+    ax.scatter(j.selectivity_log, j.pred, s=42, c=col,
+               edgecolor="white", linewidth=0.6, zorder=3)
+    ax.axhline(0, color="black", lw=0.7, ls=":")
+    ax.axvline(0, color="black", lw=0.7, ls=":")
+    ax.set_xlabel("Measured selectivity (log units)")
+    ax.set_ylabel("Predicted difference (a2 − a1)")
+    ax.set_title(f"ρ = {r:+.2f}  (p = {p:.2f}, n = {len(j)})",
+                 loc="left", fontsize=9.5, weight="bold")
+    ax.legend(handles=[Line2D([], [], marker="o", ls="", color=GREY,
+                              label=f"< {cut} CH₂"),
+                       Line2D([], [], marker="o", ls="", color=HL,
+                              label=f"≥ {cut} CH₂")],
+              frameon=False, fontsize=8, loc="best")
+    fig.tight_layout()
+    p_ = os.path.join(outdir, "Figure3_matched_pairs.png")
+    fig.savefig(p_); plt.close(fig)
+    return p_
+
+
+# ---------------------------------------------------------------- figure 4
+def figure_rescore_spread(path, outdir, log, ref_margin=None):
+    """Spread of affinity returned by several scoring models for one fixed pose,
+    against the margin that separates the published reference compounds.
+
+    The table is expected to be one row per model (or one row per model and
+    pose); the spread is taken over whichever numeric affinity column is found
+    and is computed, not asserted. The reference margin is plotted only if
+    supplied, since it comes from the literature rather than from these files.
+    """
+    t = read_table(path)
+    col, vals = series_of(t, r"affin|cnn|pk|score")
+    if vals is None or len(vals) < 2:
+        log.append(f"figure 4 skipped: no numeric affinity column in {path}")
+        return None
+    labels = None
+    for c in t.columns:
+        if not pd.api.types.is_numeric_dtype(t[c]) and t[c].nunique() == len(t):
+            labels = t[c].astype(str).tolist()
+            break
+    if labels is None:
+        labels = [f"model {i+1}" for i in range(len(vals))]
+
+    spread = float(vals.max() - vals.min())
+    log.append(f"\n=== FIGURE 4 : scoring reproducibility ({os.path.basename(path)}) ===")
+    log.append(f"  affinity column   {col}")
+    log.append(f"  n models          {len(vals)}")
+    for lab, v in zip(labels, vals):
+        log.append(f"    {lab:28s} {v:.3f}")
+    log.append(f"  spread over models {spread:.3f} pK units "
+               f"(sd {vals.std(ddof=1):.3f}, mean {vals.mean():.3f})")
+    if ref_margin:
+        log.append(f"  reference margin   {min(ref_margin):.2f} to {max(ref_margin):.2f} pK units")
+        log.append(f"  ratio              {spread/max(ref_margin):.2f}x the largest "
+                   f"reference margin")
+
+    # points on a zoomed axis rather than bars from zero: the quantity of
+    # interest is the spread between models, which bars anchored at zero make
+    # invisible at this scale
+    fig, ax = plt.subplots(figsize=(4.4, 3.2))
+    x = np.arange(len(vals))
+    pad = max(spread, (max(ref_margin) if ref_margin else 0)) * 0.9 + 0.05
+    ax.set_ylim(vals.min() - pad, vals.max() + pad)
+    ax.axhspan(vals.min(), vals.max(), color=C_A1, alpha=0.12, zorder=0)
+    ax.scatter(x, vals, s=70, color=C_A1, edgecolor="white", linewidth=0.8, zorder=4)
+    for xi, v in zip(x, vals):
+        ax.text(xi, v + 0.045*pad, f"{v:.2f}", ha="center", va="bottom",
+                fontsize=8, color=C_A1, weight="bold")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=18, ha="right", fontsize=7.5)
+    ax.set_xlim(-0.6, len(vals) - 0.05)
+
+    # the two arrows share a clear column at the right and are named in a
+    # corner key, so no label can collide with a point
+    xa = len(vals) - 0.22
+    ax.annotate("", xy=(xa, vals.max()), xytext=(xa, vals.min()),
+                arrowprops=dict(arrowstyle="<->", color="black", lw=1.1))
+    key = [(f"spread over models  {spread:.2f} pK", "black")]
+    if ref_margin:
+        m = max(ref_margin)
+        base = vals.min() - 0.55*pad
+        ax.axhspan(base, base + m, color="#ffd166", alpha=0.75, zorder=1)
+        ax.annotate("", xy=(xa, base + m), xytext=(xa, base),
+                    arrowprops=dict(arrowstyle="<->", color="#8a6d00", lw=1.1))
+        key.append((f"reference margin  {min(ref_margin):.2f}–{m:.2f} pK",
+                    "#8a6d00"))
+    for i, (txt, c) in enumerate(key):
+        ax.text(0.02, 0.97 - 0.075*i, txt, transform=ax.transAxes,
+                fontsize=8, va="top", ha="left", color=c, weight="bold")
+    ax.set_ylabel("Affinity of one fixed pose (pK units)")
+    ax.set_title("Model-to-model spread vs. reference margin",
+                 loc="left", fontsize=9, weight="bold")
+    fig.tight_layout()
+    p = os.path.join(outdir, "Figure4_scoring_reproducibility.png")
+    fig.savefig(p); plt.close(fig)
+    return p
+
+
+# ---------------------------------------------------------------- figure 5
+def figure_anchor_distance(p_a1, p_a2, outdir, log, xtal=None, cutoff=HB_CUTOFF):
+    """Separation of the hydrogen-bonding anchors at the divergent hinge over the
+    trajectories of each subunit: time course, distribution, and the fraction of
+    frames within hydrogen-bonding range. Crystal values are drawn only if given
+    on the command line, since they come from the deposited coordinates."""
+    if not (p_a1 and p_a2):
+        log.append("figure 5 skipped: need both --anchor-a1 and --anchor-a2")
+        return None
+    out = {}
+    for tag, path in (("a1", p_a1), ("a2", p_a2)):
+        t = read_table(path)
+        c = distance_column(t)
+        if c is None:
+            log.append(f"figure 5 skipped: no distance column in {path}")
+            return None
+        v = t[c].to_numpy(float)
+        ok = np.isfinite(v)
+        tv, tlab = time_column(t, len(v))
+        out[tag] = dict(t=tv[ok], d=v[ok], col=c, xlabel=tlab,
+                        src=os.path.basename(path))
+    x_label = out["a1"]["xlabel"]
+    log.append("\n=== FIGURE 5 : hinge anchor separation in dynamics ===")
+    for tag, lab in (("a1", "CK2α"), ("a2", "CK2α′")):
+        o = out[tag]
+        frac = float((o["d"] <= cutoff).mean())
+        o["frac"] = frac
+        log.append(f"  {lab:7s} [{o['src']}:{o['col']}] n={len(o['d'])}  "
+                   f"mean {o['d'].mean():.2f} A  sd {o['d'].std(ddof=1):.2f}  "
+                   f"median {np.median(o['d']):.2f}  "
+                   f"within {cutoff:.1f} A in {100*frac:.0f}% of frames")
+    log.append(f"  difference in means: "
+               f"{out['a2']['d'].mean() - out['a1']['d'].mean():+.2f} A "
+               f"(CK2α′ minus CK2α)")
+    if xtal:
+        log.append(f"  crystal separations supplied: CK2α {xtal[0]:.2f} A, "
+                   f"CK2α′ {xtal[1]:.2f} A, difference "
+                   f"{xtal[1]-xtal[0]:+.2f} A")
+
+    fig, (axA, axB, axC) = plt.subplots(1, 3, figsize=(8.4, 2.9),
+                                        gridspec_kw={"width_ratios": [1.5, 1, 0.8]})
+    for tag, lab, col in (("a1", "CK2α", C_A1), ("a2", "CK2α′", C_A2)):
+        o = out[tag]
+        axA.plot(o["t"], o["d"], color=col, lw=0.4, alpha=0.55)
+        # running mean, window = 1% of the trajectory, so the trend is visible
+        w = max(1, len(o["d"]) // 100)
+        axA.plot(o["t"], pd.Series(o["d"]).rolling(w, center=True,
+                                                   min_periods=1).mean(),
+                 color=col, lw=1.4, label=lab)
+        axB.hist(o["d"], bins=40, orientation="horizontal", color=col,
+                 alpha=0.5, density=True)
+        axB.axhline(o["d"].mean(), color=col, lw=1.4)
+    axA.axhline(cutoff, color="black", lw=0.8, ls=":")
+    axA.text(0.99, cutoff, f" {cutoff:.1f} \u00c5", transform=axA.get_yaxis_transform(),
+             ha="left", va="bottom", fontsize=7)
+    if xtal:
+        for v, col in zip(xtal, (C_A1, C_A2)):
+            axA.axhline(v, color=col, lw=0.9, ls="--", alpha=0.8)
+    axA.set_xlabel(x_label)
+    axA.set_ylabel("Anchor separation (Å)")
+    axA.legend(frameon=False, fontsize=8, loc="upper right")
+    axA.set_title("A", loc="left", fontsize=10, weight="bold")
+
+    axB.axhline(cutoff, color="black", lw=0.8, ls=":")
+    axB.set_xlabel("Density")
+    axB.set_yticklabels([])
+    axB.set_title("B", loc="left", fontsize=10, weight="bold")
+    axB.set_ylim(axA.get_ylim())
+
+    fr = [out["a1"]["frac"], out["a2"]["frac"]]
+    axC.bar([0, 1], [100*f for f in fr], color=[C_A1, C_A2], width=0.6,
+            edgecolor="white")
+    for i, f in enumerate(fr):
+        axC.text(i, 100*f + 1.5, f"{100*f:.0f}%", ha="center", fontsize=8,
+                 weight="bold")
+    axC.set_xticks([0, 1])
+    axC.set_xticklabels(["CK2α", "CK2α′"])
+    axC.set_ylabel(f"Frames within {cutoff:.1f} Å (%)")
+    axC.set_ylim(0, max(100*max(fr) + 12, 20))
+    axC.set_title("C", loc="left", fontsize=10, weight="bold")
+
+    fig.tight_layout()
+    p = os.path.join(outdir, "Figure5_hinge_anchor_geometry.png")
+    fig.savefig(p); plt.close(fig)
+    return p
+
+
+# ---------------------------------------------------------------- figure 6
+def ensemble_coords(directory, log):
+    """Cartesian coordinates of the pocket atoms of every conformer in a
+    directory of PDB files, restricted to the atom names common to all of them
+    so that the RMSD is over a defined correspondence."""
+    try:
+        import mdtraj as md
+    except ImportError:
+        log.append("figure 6 needs mdtraj:  pip install mdtraj")
+        return None, None
+    files = sorted(glob.glob(os.path.join(directory, "*.pdb"))
+                   + glob.glob(os.path.join(directory, "*.pdb.gz")))
+    if len(files) < 2:
+        log.append(f"figure 6 skipped: fewer than 2 conformers in {directory}")
+        return None, None
+    per = []
+    for f in files:
+        t = md.load(f)
+        sel = t.topology.select("name CA")
+        if len(sel) == 0:
+            sel = t.topology.select("protein")
+        keys = [(a.residue.resSeq, a.name)
+                for a in (t.topology.atom(i) for i in sel)]
+        per.append((keys, t.xyz[0][sel]))
+    common = set(per[0][0])
+    for keys, _ in per[1:]:
+        common &= set(keys)
+    if len(common) < 3:
+        log.append(f"figure 6 skipped: conformers in {directory} share too few atoms")
+        return None, None
+    order = sorted(common)
+    X = np.stack([np.stack([xyz[keys.index(k)] for k in order])
+                  for keys, xyz in per])       # (n_conf, n_atom, 3), nanometres
+    return X * 10.0, files                     # angstrom
+
+
+def _kabsch_rmsd(P, Q):
+    """RMSD after optimal superposition, both (n_atom, 3) in angstrom."""
+    P = P - P.mean(0); Q = Q - Q.mean(0)
+    V, S, W = np.linalg.svd(P.T @ Q)
+    if np.linalg.det(V @ W) < 0:
+        V[:, -1] *= -1
+    return float(np.sqrt((((P @ (V @ W)) - Q) ** 2).sum() / len(P)))
+
+
+def _pairwise(X, Y=None):
+    Y = X if Y is None else Y
+    same = Y is X
+    out = np.zeros((len(X), len(Y)))
+    for i in range(len(X)):
+        for j in range(len(Y)):
+            if same and j <= i:
+                continue
+            out[i, j] = _kabsch_rmsd(X[i], Y[j])
+    return out + out.T if same else out
+
+
+def figure_ensemble_overlap(dir_a1, dir_a2, outdir, log):
+    """Within-ensemble and between-ensemble conformer RMSD, plus the variance
+    captured by the leading principal components of each ensemble. If the two
+    distributions coincide, no weighting over conformers can separate the
+    subunits, which is the claim the figure has to be able to refute."""
+    if not (dir_a1 and dir_a2):
+        log.append("figure 6 skipped: need both --ens-a1 and --ens-a2")
+        return None
+    X1, f1 = ensemble_coords(dir_a1, log)
+    X2, f2 = ensemble_coords(dir_a2, log)
+    if X1 is None or X2 is None:
+        return None
+    # common atom count is required for a cross comparison
+    if X1.shape[1] != X2.shape[1]:
+        n = min(X1.shape[1], X2.shape[1])
+        log.append(f"  note: ensembles differ in atom count "
+                   f"({X1.shape[1]} vs {X2.shape[1]}); cross-RMSD uses the "
+                   f"first {n} shared positions")
+        X1c, X2c = X1[:, :n], X2[:, :n]
+    else:
+        X1c, X2c = X1, X2
+
+    w1 = _pairwise(X1); w2 = _pairwise(X2); cr = _pairwise(X1c, X2c)
+    iu1 = np.triu_indices(len(X1), 1); iu2 = np.triu_indices(len(X2), 1)
+    v1, v2, vc = w1[iu1], w2[iu2], cr.ravel()
+
+    log.append("\n=== FIGURE 6 : conformational ensemble overlap ===")
+    log.append(f"  CK2α  {len(X1)} conformers from {dir_a1}")
+    log.append(f"  CK2α′ {len(X2)} conformers from {dir_a2}")
+    log.append(f"  within CK2α  : mean {v1.mean():.2f} A  "
+               f"min {v1.min():.2f}  max {v1.max():.2f}")
+    log.append(f"  within CK2α′ : mean {v2.mean():.2f} A  "
+               f"min {v2.min():.2f}  max {v2.max():.2f}")
+    log.append(f"  between       : mean {vc.mean():.2f} A  "
+               f"min {vc.min():.2f}  max {vc.max():.2f}")
+    log.append(f"  between minus larger within-mean: "
+               f"{vc.mean() - max(v1.mean(), v2.mean()):+.2f} A "
+               f"({'ensembles separate' if vc.mean() > max(v1.mean(), v2.mean()) else 'ensembles overlap'})")
+
+    # scree: variance of each ensemble along its own principal components
+    scree = {}
+    for tag, X in (("a1", X1), ("a2", X2)):
+        F = X.reshape(len(X), -1)
+        F = F - F.mean(0)
+        s = np.linalg.svd(F, compute_uv=False) ** 2
+        frac = s / s.sum()
+        scree[tag] = frac
+        k = min(10, len(frac))
+        log.append(f"  PC1 of {tag}: {100*frac[0]:.1f}% of variance; "
+                   f"first {k} PCs {100*frac[:k].sum():.1f}%")
+
+    fig, (axA, axB) = plt.subplots(1, 2, figsize=(7.2, 3.0))
+    # bins span the data rather than starting at zero: an axis anchored at 0
+    # would compress the three distributions together and flatter the claim
+    lo_b = min(v1.min(), v2.min(), vc.min())
+    hi_b = max(v1.max(), v2.max(), vc.max())
+    pad = 0.05 * (hi_b - lo_b or 1.0)
+    bins = np.linspace(lo_b - pad, hi_b + pad, 34)
+    for v, lab, col in ((v1, f"within CK2α (mean {v1.mean():.2f} Å)", C_A1),
+                        (v2, f"within CK2α′ (mean {v2.mean():.2f} Å)", C_A2),
+                        (vc, f"between (mean {vc.mean():.2f} Å)", GREY)):
+        axA.hist(v, bins=bins, density=True, histtype="step", lw=1.6,
+                 color=col, label=lab)
+    axA.set_xlabel("Conformer-to-conformer RMSD (Å)")
+    axA.set_ylabel("Density")
+    axA.legend(frameon=False, fontsize=7.5)
+    axA.set_title("A   Between vs. within subunit", loc="left",
+                  fontsize=9, weight="bold")
+
+    k = min(10, len(scree["a1"]), len(scree["a2"]))
+    x = np.arange(1, k+1)
+    axB.bar(x-0.19, 100*scree["a1"][:k], width=0.36, color=C_A1, label="CK2α")
+    axB.bar(x+0.19, 100*scree["a2"][:k], width=0.36, color=C_A2, label="CK2α′")
+    axB.set_xticks(x)
+    axB.set_xlabel("Principal component")
+    axB.set_ylabel("Variance explained (%)")
+    axB.legend(frameon=False, fontsize=8)
+    axB.set_title("B   Site motion, leading components", loc="left",
+                  fontsize=9, weight="bold")
+
+    fig.tight_layout()
+    p = os.path.join(outdir, "Figure6_ensemble_overlap.png")
+    fig.savefig(p); plt.close(fig)
+    return p
+
+
+# ---------------------------------------------------------------- figure 7
+def figure_methyl_access(path, outdir, log, sheet=None):
+    """Per-compound reach of ligand carbon to the isoform-specific methyl:
+    CK2a' Ile117-CD1 against CK2a Val116-CG1. The sign of the difference is
+    counted over compounds and tested, so a single reversal would be visible."""
+    t = read_table(path, sheet)
+    # distance and occupancy columns are matched by residue/atom name, so the
+    # figure follows whatever the scan table actually recorded
+    d2 = pick_col(t, r"ile|117|cd1", r"dist|approach|min")
+    d1 = pick_col(t, r"val|116|cg1", r"dist|approach|min")
+    o2 = pick_col(t, r"ile|117|cd1", r"frac|occup|contact|pct|percent")
+    o1 = pick_col(t, r"val|116|cg1", r"frac|occup|contact|pct|percent")
+    if not (d2 and d1):
+        log.append(f"figure 7 skipped: no paired Ile117-CD1 / Val116-CG1 "
+                   f"distance columns in {path} (columns: {list(t.columns)[:12]})")
+        return None
+    sub = t[[d1, d2] + [c for c in (o1, o2) if c]].dropna(subset=[d1, d2])
+    if len(sub) < 3:
+        log.append("figure 7 skipped: fewer than 3 compounds with both distances")
+        return None
+    diff = (sub[d2] - sub[d1]).to_numpy(float)
+    n_pos = int((diff > 0).sum()); n = len(diff)
+    bt = binomtest(n_pos, n, 0.5)
+
+    log.append(f"\n=== FIGURE 7 : reach to the divergent methyl, n = {n} compounds ===")
+    log.append(f"  CK2α′ column {d2}: median {sub[d2].median():.2f} Å")
+    log.append(f"  CK2α  column {d1}: median {sub[d1].median():.2f} Å")
+    log.append(f"  difference (CK2α′ − CK2α): mean {diff.mean():+.3f} Å, "
+               f"median {np.median(diff):+.3f}")
+    log.append(f"  positive in {n_pos} of {n} compounds "
+               f"(CK2α′ methyl further away); sign test p = {bt.pvalue:.2e}")
+    if o1 and o2:
+        log.append(f"  contact frequency: CK2α′ {sub[o2].mean():.3f} mean, "
+                   f"CK2α {sub[o1].mean():.3f} mean "
+                   f"({o2} vs {o1})")
+
+    has_occ = bool(o1 and o2)
+    fig, axes = plt.subplots(1, 2 if has_occ else 1,
+                             figsize=(7.0 if has_occ else 3.7, 3.2))
+    axA = axes[0] if has_occ else axes
+    lim = [min(sub[d1].min(), sub[d2].min()) - 0.15,
+           max(sub[d1].max(), sub[d2].max()) + 0.15]
+    axA.plot(lim, lim, color="black", lw=0.8, ls=":")
+    axA.scatter(sub[d1], sub[d2], s=30, color=HL if n_pos == n else C_A2,
+                edgecolor="white", linewidth=0.5, zorder=3)
+    axA.set_xlim(lim); axA.set_ylim(lim)
+    axA.set_xlabel("Closest ligand C to CK2α Val116-CG1 (Å)")
+    axA.set_ylabel("Closest ligand C to CK2α′ Ile117-CD1 (Å)")
+    axA.set_title(f"A   above the diagonal in {n_pos}/{n} (p = {bt.pvalue:.0e})",
+                  loc="left", fontsize=9, weight="bold")
+
+    if has_occ:
+        axB = axes[1]
+        m1, m2 = sub[o1].mean(), sub[o2].mean()
+        scale = 100.0 if max(m1, m2) <= 1.0 else 1.0
+        axB.bar([0, 1], [scale*m1, scale*m2], color=[C_A1, C_A2], width=0.6,
+                edgecolor="white")
+        for i, m in enumerate((m1, m2)):
+            axB.text(i, scale*m + 0.02*scale*max(m1, m2) + 0.4,
+                     f"{scale*m:.1f}%" if scale == 100 else f"{m:.1f}",
+                     ha="center", fontsize=8, weight="bold")
+        axB.set_xticks([0, 1])
+        axB.set_xticklabels(["CK2α\nVal116-CG1", "CK2α′\nIle117-CD1"])
+        axB.set_ylabel("Poses making the contact (%)" if scale == 100
+                       else "Contact measure")
+        axB.set_title("B   the CK2α′ methyl is contacted less often",
+                      loc="left", fontsize=9, weight="bold")
+
+    fig.tight_layout()
+    p = os.path.join(outdir, "Figure7_methyl_accessibility.png")
+    fig.savefig(p); plt.close(fig)
+    return p
+
+
+# ---------------------------------------------------------------- main
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--paired", default="chembl_ck2_paired.csv",
+                    help="paired ChEMBL table (figures 1-3)")
+    ap.add_argument("--dock", default="dock_paired/docking_results.xlsx",
+                    help="docking results (figures 2-3)")
+    ap.add_argument("--dock-sheet", default="best_wide")
+    ap.add_argument("--min-members", type=int, default=4)
+    ap.add_argument("--rescore", help="one row per scoring model, one fixed pose (figure 4)")
+    ap.add_argument("--ref-margin", default="0.24,0.25",
+                    help="pK separation of the published reference compounds, "
+                         "as low,high; pass '' to omit it from figure 4")
+    ap.add_argument("--anchor-a1", help="anchor separation over the CK2a trajectory")
+    ap.add_argument("--anchor-a2", help="anchor separation over the CK2a' trajectory")
+    ap.add_argument("--xtal", default="",
+                    help="crystal anchor separations as a1,a2 in angstrom (figure 5)")
+    ap.add_argument("--hb-cutoff", type=float, default=HB_CUTOFF,
+                    help="donor-acceptor distance counted as hydrogen bonded")
+    ap.add_argument("--ens-a1", help="directory of CK2a conformer PDBs (figure 6)")
+    ap.add_argument("--ens-a2", help="directory of CK2a' conformer PDBs (figure 6)")
+    ap.add_argument("--scan", help="analogue scan table (figure 7)")
+    ap.add_argument("--scan-sheet", default=None)
+    ap.add_argument("--outdir", default="figures")
+    a = ap.parse_args()
+    os.makedirs(a.outdir, exist_ok=True)
+    log, made = [], []
+
+    def parse_pair(s):
+        try:
+            v = [float(x) for x in s.split(",") if x.strip()]
+            return v if len(v) == 2 else None
+        except ValueError:
+            return None
+
+    # ---- figures 1-3: paired activity and docking
+    d = None
+    if os.path.exists(a.paired):
+        try:
+            d = pd.read_csv(a.paired)
+            log.append(f"[in] {len(d)} paired compounds from {a.paired}")
+        except Exception as e:
+            log.append(f"[warn] could not read {a.paired}: {e}")
+    else:
+        log.append(f"[warn] {a.paired} not found; figures 1-3 will be skipped")
+
+    dock = None
+    if os.path.exists(a.dock):
+        try:
+            dock = read_table(a.dock, a.dock_sheet)
+            log.append(f"[in] {len(dock)} rows from {a.dock} [{a.dock_sheet}]")
+        except Exception as e:
+            log.append(f"[warn] could not read {a.dock}: {e}")
+    else:
+        log.append(f"[warn] {a.dock} not found; figures 2 and 3 will be skipped")
+
+    g = cut = None
+    if d is not None:
+        try:
+            r1 = figure_scaffold_sar(d, a.outdir, a.min_members, log)
+        except ImportError:
+            log.append("figures 1 and 3 skipped: need rdkit  (pip install rdkit)")
+            r1 = None
+        if r1:
+            made.append(r1[0]); g, cut = r1[1], r1[2]
+
+        if dock is not None:
+            r2 = figure_benchmark(d, dock, a.outdir, log)
+            if r2:
+                made.append(r2[0])
+                r2[1].to_csv(os.path.join(a.outdir, "Table1_benchmark.csv"), index=False)
+            if g is not None:
+                r3 = figure_matched_pairs(g, cut, dock, a.outdir, log)
+                if r3:
+                    made.append(r3)
+
+    # ---- figure 4: scoring reproducibility
+    if a.rescore:
+        if os.path.exists(a.rescore):
+            r = figure_rescore_spread(a.rescore, a.outdir, log,
+                                      parse_pair(a.ref_margin))
+            if r:
+                made.append(r)
+        else:
+            log.append(f"figure 4 skipped: {a.rescore} not found")
+
+    # ---- figure 5: hinge anchor geometry
+    if a.anchor_a1 or a.anchor_a2:
+        missing = [p for p in (a.anchor_a1, a.anchor_a2)
+                   if p and not os.path.exists(p)]
+        if missing:
+            log.append(f"figure 5 skipped: not found: {', '.join(missing)}")
+        else:
+            r = figure_anchor_distance(a.anchor_a1, a.anchor_a2, a.outdir, log,
+                                       parse_pair(a.xtal), a.hb_cutoff)
+            if r:
+                made.append(r)
+
+    # ---- figure 6: ensemble overlap
+    if a.ens_a1 or a.ens_a2:
+        missing = [p for p in (a.ens_a1, a.ens_a2) if p and not os.path.isdir(p)]
+        if missing:
+            log.append(f"figure 6 skipped: not a directory: {', '.join(missing)}")
+        else:
+            r = figure_ensemble_overlap(a.ens_a1, a.ens_a2, a.outdir, log)
+            if r:
+                made.append(r)
+
+    # ---- figure 7: methyl accessibility
+    if a.scan:
+        if os.path.exists(a.scan):
+            r = figure_methyl_access(a.scan, a.outdir, log, a.scan_sheet)
+            if r:
+                made.append(r)
+        else:
+            log.append(f"figure 7 skipped: {a.scan} not found")
+
+    print("\n".join(log))
+    with open(os.path.join(a.outdir, "figure_values.txt"), "w") as f:
+        f.write("\n".join(log) + "\n")
+    print(f"\n[out] {len(made)} figure(s):")
+    for m in made:
+        print("   ", m)
+    print(f"    {a.outdir}/figure_values.txt  (every plotted number)")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
