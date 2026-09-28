@@ -108,6 +108,29 @@ def pick_col(df, *patterns, exclude=()):
     return None
 
 
+def matched_a1a2(df, *patterns, exclude=()):
+    """A matched pair of numeric columns describing the same quantity for the
+    two subunits, e.g. (a1_dmin, a2_dmin). Returns (col_a1, col_a2) or None.
+
+    The pairing is by name: a column carrying an a1 token has a counterpart
+    with the same name and an a2 token. Nothing about which is which is
+    assumed beyond that token."""
+    cols = list(df.columns)
+    for c in numeric_cols(df):
+        low = c.lower()
+        if not re.search(r"(^|[^a-z0-9])a1([^a-z0-9]|$)", low):
+            continue
+        if patterns and not all(re.search(p, low) for p in patterns):
+            continue
+        if any(re.search(x, low) for x in exclude):
+            continue
+        for cand in (c.replace("a1", "a2"), c.replace("A1", "A2")):
+            if cand != c and cand in cols \
+                    and pd.api.types.is_numeric_dtype(df[cand]):
+                return c, cand
+    return None
+
+
 def pick_atom_col(df, residue, atom):
     """The column carrying the distance to one named atom of one named residue,
     e.g. ILE117 CD1. Requires both names in the column, so a residue-wide
@@ -811,14 +834,28 @@ def figure_methyl_access(path, outdir, log, sheet=None, lab1="a1", lab2="a2",
     # column is a different quantity and must not stand in for the methyl
     d2 = pick_atom_col(t, res2, atom2)
     d1 = pick_atom_col(t, res1, atom1)
+    src = f"{res1}-{atom1} vs {res2}-{atom2}"
     if not (d2 and d1):
-        log.append(f"figure 7 skipped: {path} has no column pairing "
-                   f"{res2}-{atom2} with {res1}-{atom1}. "
-                   f"Numeric columns: {numeric_cols(t)[:14]}")
-        return None
+        # a table may record the same comparison already reduced to one column
+        # per subunit (a1_dmin / a2_dmin) rather than per residue and atom
+        pair = matched_a1a2(t, r"dmin|dist|approach|reach")
+        if pair:
+            d1, d2 = pair
+            src = f"matched pair {d1} / {d2}"
+        else:
+            log.append(f"figure 7 skipped: {path} has neither a "
+                       f"{res2}-{atom2} / {res1}-{atom1} column pair nor a "
+                       f"matched a1/a2 distance pair. "
+                       f"Numeric columns: {numeric_cols(t)[:14]}")
+            return None
+    log.append(f"  [figure 7] comparing {src}  (from {os.path.basename(path)})")
 
-    o2 = pick_col(t, res2.lower(), r"frac|occup|contact|pct|percent")
-    o1 = pick_col(t, res1.lower(), r"frac|occup|contact|pct|percent")
+    o2 = (pick_col(t, res2.lower(), r"frac|occup|contact|pct|percent")
+          or pick_col(t, r"(^|[^a-z0-9])a2([^a-z0-9]|$)",
+                      r"frac|occup|contact|pct|percent"))
+    o1 = (pick_col(t, res1.lower(), r"frac|occup|contact|pct|percent")
+          or pick_col(t, r"(^|[^a-z0-9])a1([^a-z0-9]|$)",
+                      r"frac|occup|contact|pct|percent"))
 
     # A pose-level table lists every pose of every receptor down the rows, with
     # the residue columns blank where that residue is not in that receptor.
