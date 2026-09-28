@@ -475,7 +475,15 @@ def figure_benchmark(paired, dock, outdir, log, bench=None):
         log.append(f"  {label:28s} rho {r:+.3f}  p {p:.3f}  n {ok.sum():3d}  "
                    f"top{k} {top:+.2f} vs bot{k} {bot:+.2f}  sep {top-bot:+.2f}")
     if not rows:
-        log.append("figure 2 skipped: no criterion had enough paired values")
+        n_meas = int(j[mcol].notna().sum())
+        log.append(f"figure 2 skipped: no criterion had enough paired values. "
+                   f"Only {n_meas} of {len(j)} rows carry a value in '{mcol}'")
+        if n_meas < 0.2 * len(j):
+            log.append("  this table is mostly compounds with no measurement "
+                       "(designed or enumerated rather than assayed). A "
+                       "benchmark needs the measured set: drop --benchmark to "
+                       "join the paired activity table to a docking table "
+                       "instead")
         return None
     t = pd.DataFrame(rows).sort_values("rho")
 
@@ -804,12 +812,12 @@ def ensemble_coords(directory, log):
         import mdtraj as md
     except ImportError:
         log.append("figure 6 needs mdtraj:  pip install mdtraj")
-        return None, None
+        return None, None, None
     files = sorted(glob.glob(os.path.join(directory, "*.pdb"))
                    + glob.glob(os.path.join(directory, "*.pdb.gz")))
     if len(files) < 2:
         log.append(f"figure 6 skipped: fewer than 2 conformers in {directory}")
-        return None, None
+        return None, None, None
     per = []
     for f in files:
         t = md.load(f)
@@ -824,11 +832,11 @@ def ensemble_coords(directory, log):
         common &= set(keys)
     if len(common) < 3:
         log.append(f"figure 6 skipped: conformers in {directory} share too few atoms")
-        return None, None
+        return None, None, None
     order = sorted(common)
     X = np.stack([np.stack([xyz[keys.index(k)] for k in order])
                   for keys, xyz in per])       # (n_conf, n_atom, 3), nanometres
-    return X * 10.0, files                     # angstrom
+    return X * 10.0, files, order              # angstrom
 
 
 def _kabsch_rmsd(P, Q):
@@ -860,25 +868,49 @@ def figure_ensemble_overlap(dir_a1, dir_a2, outdir, log, lab1="a1", lab2="a2"):
     if not (dir_a1 and dir_a2):
         log.append("figure 6 skipped: need both --ens-a1 and --ens-a2")
         return None
-    X1, f1 = ensemble_coords(dir_a1, log)
-    X2, f2 = ensemble_coords(dir_a2, log)
+    log.append("\n=== FIGURE 6 : conformational ensemble overlap ===")
+    X1, f1, k1 = ensemble_coords(dir_a1, log)
+    X2, f2, k2 = ensemble_coords(dir_a2, log)
     if X1 is None or X2 is None:
         return None
-    # common atom count is required for a cross comparison
-    if X1.shape[1] != X2.shape[1]:
-        n = min(X1.shape[1], X2.shape[1])
-        log.append(f"  note: ensembles differ in atom count "
-                   f"({X1.shape[1]} vs {X2.shape[1]}); cross-RMSD uses the "
-                   f"first {n} shared positions")
-        X1c, X2c = X1[:, :n], X2[:, :n]
-    else:
-        X1c, X2c = X1, X2
+
+    # The cross comparison needs the two ensembles aligned residue to residue.
+    # Truncating to a common length instead would pair atom i of one subunit
+    # with atom i of the other, which is not a correspondence at all: where the
+    # two differ in length or numbering it compares unrelated positions and
+    # returns a large RMSD that says nothing about the structures.
+    #
+    # The two subunits are numbered with an offset, so the offset is found from
+    # the data: the shift that puts the most residues of one onto the other.
+    r1 = [r for r, _ in k1]
+    r2 = [r for r, _ in k2]
+    s1, s2 = set(r1), set(r2)
+    best_off, best_n = 0, -1
+    for off in range(-30, 31):
+        n_hit = len(s1 & {r + off for r in s2})
+        if n_hit > best_n:
+            best_off, best_n = off, n_hit
+    shared = sorted(s1 & {r + off for r in s2 for off in (best_off,)})
+    if len(shared) < 3:
+        log.append(f"figure 6 skipped: the two ensembles share only "
+                   f"{len(shared)} residue(s) at the best offset; no "
+                   f"correspondence to compare over")
+        return None
+    i1 = [r1.index(r) for r in shared]
+    i2 = [r2.index(r - best_off) for r in shared]
+    X1c, X2c = X1[:, i1], X2[:, i2]
+    log.append(f"  cross comparison over {len(shared)} residues matched at "
+               f"offset {best_off:+d} "
+               f"({X1.shape[1]} and {X2.shape[1]} residues available)")
+    if len(shared) < 0.5 * min(X1.shape[1], X2.shape[1]):
+        log.append(f"  warning: that is under half of either ensemble; check "
+                   f"the residue numbering before reading the between-subunit "
+                   f"distribution")
 
     w1 = _pairwise(X1); w2 = _pairwise(X2); cr = _pairwise(X1c, X2c)
     iu1 = np.triu_indices(len(X1), 1); iu2 = np.triu_indices(len(X2), 1)
     v1, v2, vc = w1[iu1], w2[iu2], cr.ravel()
 
-    log.append("\n=== FIGURE 6 : conformational ensemble overlap ===")
     log.append(f"  {lab1} {len(X1)} conformers from {dir_a1}")
     log.append(f"  {lab2} {len(X2)} conformers from {dir_a2}")
     log.append(f"  within {lab1} : mean {v1.mean():.2f} A  "
