@@ -1,0 +1,6 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Figure output written by make_manuscript_figures.py
+figures/
