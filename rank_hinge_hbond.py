@@ -41,6 +41,100 @@ def residues(s):
     return {t for t in re.split(r"[\s,;]+", str(s).strip()) if t}
 
 
+def target_mode(d, s1, s2, pairs, idc, a, log):
+    """Rank by engagement of named residues in the second subunit alone.
+
+    This answers "which compounds bond to these residues", which is a
+    different question from "which compounds prefer this subunit". A compound
+    that engages the named residues and their counterparts in the other
+    subunit sits at the top of this ranking while discriminating nothing, so
+    the counterpart engagement is carried alongside and reported, never folded
+    into the rank."""
+    want = [t.strip() for t in a.target.split(",") if t.strip()]
+    counterpart = {r2: r1 for r1, r2 in pairs}
+
+    hit = pd.DataFrame({r: s2.map(lambda S, x=r: x in S) for r in want})
+    n_hit = hit.sum(axis=1)
+
+    # Exclusivity is judged only against counterparts that vary. A counterpart
+    # engaged by every compound makes "engages no counterpart" impossible for
+    # anyone, so including it would report zero discriminating compounds no
+    # matter what the data says, which is an artefact of the test rather than
+    # a property of the set.
+    cp_cols, skipped = {}, []
+    for r in want:
+        c = counterpart.get(r)
+        if not c:
+            continue
+        eng = s1.map(lambda S, x=c: x in S)
+        if eng.mean() >= 0.95:
+            skipped.append((r, c, float(eng.mean())))
+        else:
+            cp_cols[r] = eng
+    cp = pd.DataFrame(cp_cols)
+    n_cp = cp.sum(axis=1) if len(cp.columns) else pd.Series(0, index=d.index)
+    exclusive = (n_hit == len(want)) & (n_cp == 0)
+
+    log.append(f"\n=== TARGET MODE : engagement of {', '.join(want)} "
+               f"in {a.label2} ===")
+    for r in want:
+        n = int(hit[r].sum())
+        log.append(f"     {r:8s} engaged by {n:4d} of {len(d)} "
+                   f"({100*n/len(d):.0f}%)"
+                   + ("   [note] near-universal, so it barely separates anything"
+                      if n >= 0.95*len(d) else ""))
+    log.append(f"\n     engaging all {len(want)}: "
+               f"{int((n_hit == len(want)).sum())} of {len(d)}")
+    for k in range(len(want), -1, -1):
+        log.append(f"       {k} of {len(want)}: {int((n_hit == k).sum()):4d}")
+    for r, c, frac in skipped:
+        log.append(f"\n     [note] the {a.label1} counterpart of {r} is {c}, "
+                   f"engaged by {100*frac:.0f}% of compounds. No compound can "
+                   f"avoid it, so it is left out of the exclusivity test; "
+                   f"including it would report zero discriminating compounds "
+                   f"whatever the data held")
+    if len(cp.columns):
+        top = n_hit == len(want)
+        log.append(f"\n     of the {int(top.sum())} engaging all {len(want)}, "
+                   f"judged against {', '.join(counterpart[r] for r in cp.columns)}:")
+        log.append(f"       {int((top & (n_cp == 0)).sum()):4d} engage no "
+                   f"{a.label1} counterpart  -> discriminating")
+        log.append(f"       {int((top & (n_cp > 0)).sum()):4d} also engage a "
+                   f"{a.label1} counterpart -> bind both, discriminate nothing")
+    else:
+        log.append(f"\n     [note] no counterpart varies enough to judge "
+                   f"exclusivity, so this ranking reports engagement only")
+
+    out = d[[idc]].copy()
+    out["n_target"] = n_hit
+    out["residues"] = [" ".join(r for r in want if hit.loc[i, r]) for i in d.index]
+    out["n_counterpart"] = n_cp
+    out["exclusive"] = exclusive
+    sort_cols, asc = ["n_target"], [False]
+    if a.tiebreak and a.tiebreak in d.columns:
+        out[a.tiebreak] = d[a.tiebreak]
+        sort_cols.append(a.tiebreak); asc.append(False)
+        log.append(f"\n     ties broken on {a.tiebreak}, highest first")
+    else:
+        if a.tiebreak:
+            log.append(f"\n     [warn] tiebreak column '{a.tiebreak}' not in "
+                       f"the table; ordering ties by identifier")
+    sort_cols += ["exclusive", idc]; asc += [False, True]
+    out = out.sort_values(sort_cols, ascending=asc)
+
+    path = os.path.splitext(a.out)[0] + "_target_ranking.csv"
+    out.to_csv(path, index=False)
+    log.append(f"\n     top {a.top}:")
+    for _, r in out.head(a.top).iterrows():
+        log.append(f"       {str(r[idc]):16s} {int(r.n_target)}/{len(want)} "
+                   f"[{r.residues}]  counterpart {int(r.n_counterpart)}"
+                   f"{'  EXCLUSIVE' if r.exclusive else ''}"
+                   + (f"  {a.tiebreak}={r[a.tiebreak]:g}"
+                      if a.tiebreak and a.tiebreak in out.columns else ""))
+    log.append(f"\n     [out] {path}")
+    return out
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--table", default="comparison.csv")
@@ -55,6 +149,17 @@ def main():
     p.add_argument("--label1", default="a1")
     p.add_argument("--label2", default="a2")
     p.add_argument("--top", type=int, default=20)
+    p.add_argument("--target",
+                   help="rank by engagement of these residues in the second "
+                        "subunit alone, e.g. TYR116,ILE117, rather than by the "
+                        "paired comparison. This ranks binding to that subunit, "
+                        "which is not the same as preferring it: a compound "
+                        "engaging both subunits' residues ranks top here and "
+                        "still discriminates nothing, so the counterpart from "
+                        "--pairs is reported beside it")
+    p.add_argument("--tiebreak",
+                   help="numeric column ordering compounds inside a tier, "
+                        "highest first (e.g. a2_n_hbond)")
     p.add_argument("--out", default="Figure_hinge_hbond.png")
     a = p.parse_args()
 
@@ -105,10 +210,16 @@ def main():
                    f"only {a.label1} {n_only1:4d}   neither {n_none:4d}")
         log.append(f"     discriminating (one and not the other): {n_disc} of "
                    f"{len(d)} ({100*n_disc/len(d):.0f}%)")
-        if n_disc == 0:
-            log.append(f"     [note] every compound treats this position the "
-                       f"same way, so it cannot rank anything. It is kept in "
-                       f"the figure and left out of the score")
+        # a position separating a handful of compounds out of hundreds is a
+        # constant with a rounding error on it, not a criterion: it shifts one
+        # or two scores and reads as signal. The floor scales with the set so
+        # it does not become strict on a small one.
+        floor = max(2, int(round(0.02 * len(d))))
+        if n_disc < floor:
+            log.append(f"     [note] only {n_disc} of {len(d)} compounds are "
+                       f"separated here, below the floor of {floor} "
+                       f"(2 percent). This position is effectively a constant: "
+                       f"it is drawn but left out of the score")
         else:
             usable.append(len(stats) - 1)
 
@@ -165,6 +276,9 @@ def main():
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     ranked[[idc, "_score"]].rename(columns={"_score": "hinge_score"}).to_csv(
         os.path.splitext(a.out)[0] + "_ranking.csv", index=False)
+
+    if a.target:
+        target_mode(d, s1, s2, pairs, idc, a, log)
 
     # ---- figure
     fig, (axA, axB) = plt.subplots(1, 2, figsize=(9.2, 3.6),
