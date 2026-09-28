@@ -171,6 +171,12 @@ def main():
                    help="minimum angle at a polar atom between its bonded "
                         "neighbour and its partner; rejects pairs that are "
                         "close but pointing away from each other")
+    p.add_argument("--props", default="CNNscore,CNNaffinity,minimizedAffinity",
+                   help="pose properties to copy out of the selected pose. "
+                        "Taking them from the same pose the bonds were counted "
+                        "on keeps every quantity describing one binding mode, "
+                        "rather than joining to a table built from a different "
+                        "pose or a different run")
     p.add_argument("--match",
                    help="only read pose files whose name contains this. A pose "
                         "directory usually holds one file per compound PER "
@@ -224,13 +230,21 @@ def main():
         cid = (best.GetProp("_Name").strip() if best.HasProp("_Name")
                and best.GetProp("_Name").strip()
                else os.path.basename(f).split("__")[0])
-        rows.append({
+        rec = {
             "cpd_id": cid,
             f"{a.tag}_n_hbond": int(sum(hits.values())),
             f"{a.tag}_hbond_res": " ".join(sorted(hits)),
-            f"{a.tag}_{a.select_by}": (None if best_v <= -1e8 else best_v),
             f"{a.tag}_n_poses_seen": sum(1 for _ in Chem.SDMolSupplier(f)),
-        })
+        }
+        for prop in (x.strip() for x in a.props.split(",") if x.strip()):
+            v = None
+            if best.HasProp(prop):
+                try:
+                    v = float(best.GetProp(prop))
+                except ValueError:
+                    v = best.GetProp(prop)
+            rec[f"{a.tag}_{prop}"] = v
+        rows.append(rec)
 
     # one row per compound. More than one means the directory held several
     # files for it, which for a pose directory normally means several
