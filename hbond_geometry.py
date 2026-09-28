@@ -171,8 +171,10 @@ def main():
                    help="minimum angle at a polar atom between its bonded "
                         "neighbour and its partner; rejects pairs that are "
                         "close but pointing away from each other")
-    p.add_argument("--props", default="CNNscore,CNNaffinity,minimizedAffinity",
-                   help="pose properties to copy out of the selected pose. "
+    p.add_argument("--props", default="all",
+                   help="pose properties to copy out of the selected pose, or "
+                        "'all' to copy every property the pose carries, which "
+                        "avoids having to know what the docking wrote. "
                         "Taking them from the same pose the bonds were counted "
                         "on keeps every quantity describing one binding mode, "
                         "rather than joining to a table built from a different "
@@ -236,7 +238,11 @@ def main():
             f"{a.tag}_hbond_res": " ".join(sorted(hits)),
             f"{a.tag}_n_poses_seen": sum(1 for _ in Chem.SDMolSupplier(f)),
         }
-        for prop in (x.strip() for x in a.props.split(",") if x.strip()):
+        if a.props.strip().lower() == "all":
+            want = [x for x in best.GetPropNames() if not x.startswith("_")]
+        else:
+            want = [x.strip() for x in a.props.split(",") if x.strip()]
+        for prop in want:
             v = None
             if best.HasProp(prop):
                 try:
