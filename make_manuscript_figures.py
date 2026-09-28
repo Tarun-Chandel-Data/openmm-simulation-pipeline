@@ -108,6 +108,19 @@ def pick_col(df, *patterns, exclude=()):
     return None
 
 
+def pick_atom_col(df, residue, atom):
+    """The column carrying the distance to one named atom of one named residue,
+    e.g. ILE117 CD1. Requires both names in the column, so a residue-wide
+    'closest any atom' column such as ILE117_mindist is never substituted for
+    the specific atom the comparison is about."""
+    res, at = residue.lower(), atom.lower()
+    for c in numeric_cols(df):
+        low = c.lower()
+        if res in low and at in low and re.search(r"dist|approach", low):
+            return c
+    return None
+
+
 def series_of(df, *patterns, exclude=()):
     c = pick_col(df, *patterns, exclude=exclude)
     return (c, df[c].dropna().to_numpy(float)) if c else (None, None)
@@ -788,24 +801,49 @@ def figure_ensemble_overlap(dir_a1, dir_a2, outdir, log, lab1="a1", lab2="a2"):
 
 
 # ---------------------------------------------------------------- figure 7
-def figure_methyl_access(path, outdir, log, sheet=None, lab1="a1", lab2="a2"):
+def figure_methyl_access(path, outdir, log, sheet=None, lab1="a1", lab2="a2",
+                         res1="VAL116", atom1="CG1", res2="ILE117", atom2="CD1"):
     """Per-compound reach of ligand carbon to the isoform-specific methyl, one
     subunit against the other. Both directions are counted and the sign test is
     two-sided, so whichever way the data falls is what the figure reports."""
     t = read_table(path, sheet)
-    # distance and occupancy columns are matched by residue/atom name, so the
-    # figure follows whatever the scan table actually recorded
-    d2 = pick_col(t, r"ile|117|cd1", r"dist|approach|min")
-    d1 = pick_col(t, r"val|116|cg1", r"dist|approach|min")
-    o2 = pick_col(t, r"ile|117|cd1", r"frac|occup|contact|pct|percent")
-    o1 = pick_col(t, r"val|116|cg1", r"frac|occup|contact|pct|percent")
+    # the two atoms are named, not inferred: a residue-wide 'closest any atom'
+    # column is a different quantity and must not stand in for the methyl
+    d2 = pick_atom_col(t, res2, atom2)
+    d1 = pick_atom_col(t, res1, atom1)
     if not (d2 and d1):
-        log.append(f"figure 7 skipped: no paired Ile117-CD1 / Val116-CG1 "
-                   f"distance columns in {path} (columns: {list(t.columns)[:12]})")
+        log.append(f"figure 7 skipped: {path} has no column pairing "
+                   f"{res2}-{atom2} with {res1}-{atom1}. "
+                   f"Numeric columns: {numeric_cols(t)[:14]}")
         return None
-    sub = t[[d1, d2] + [c for c in (o1, o2) if c]].dropna(subset=[d1, d2])
+
+    o2 = pick_col(t, res2.lower(), r"frac|occup|contact|pct|percent")
+    o1 = pick_col(t, res1.lower(), r"frac|occup|contact|pct|percent")
+
+    # A pose-level table lists every pose of every receptor down the rows, with
+    # the residue columns blank where that residue is not in that receptor.
+    # Collapse to one value per compound per atom: the closest approach reached
+    # by any pose, which is what "can the ligand reach this atom" means.
+    idc = next((c for c in t.columns
+                if re.search(r"cpd|compound|ligand|chembl|name|id$", c.lower())
+                and not pd.api.types.is_numeric_dtype(t[c])), None)
+    if idc is not None and t[idc].duplicated().any():
+        g = t.groupby(idc)
+        agg = {d1: "min", d2: "min"}
+        for c in (o1, o2):
+            if c and pd.api.types.is_numeric_dtype(t[c]):
+                agg[c] = "mean"
+        sub = g.agg(agg)
+        o1 = o1 if o1 in sub.columns else None
+        o2 = o2 if o2 in sub.columns else None
+        log.append(f"  [figure 7] {len(t)} rows collapsed to {len(sub)} "
+                   f"compounds by '{idc}' (closest approach over poses)")
+    else:
+        sub = t[[c for c in (d1, d2, o1, o2) if c]]
+    sub = sub.dropna(subset=[d1, d2])
     if len(sub) < 3:
-        log.append("figure 7 skipped: fewer than 3 compounds with both distances")
+        log.append(f"figure 7 skipped: only {len(sub)} compound(s) have both "
+                   f"{d1} and {d2}")
         return None
     diff = (sub[d2] - sub[d1]).to_numpy(float)
     n_pos = int((diff > 0).sum())
@@ -890,7 +928,7 @@ WANTED = [
     ("rescore",   [r"rescore"],                         "table"),
     ("anchor_a1", [r"anchor", r"a1"],                   "table"),
     ("anchor_a2", [r"anchor", r"a2"],                   "table"),
-    ("scan",      [r"scan|pharm"],                      "table"),
+    ("scan",      [r"interact|scan|pharm"],              "table"),
     ("ens_a1",    [r"ens", r"a1"],                      "pdbdir"),
     ("ens_a2",    [r"ens", r"a2"],                      "pdbdir"),
 ]
@@ -919,10 +957,25 @@ def walk_inputs(roots):
     return sorted(tables), sorted(pdbdirs)
 
 
+_ROWS = {}
+
+
+def table_rows(path):
+    """Row count, read once and remembered. Unreadable files score zero so a
+    corrupt table never wins a comparison."""
+    if path not in _ROWS:
+        try:
+            _ROWS[path] = len(read_table(path))
+        except Exception:
+            _ROWS[path] = 0
+    return _ROWS[path]
+
+
 def discover(a, log):
     """Fill in any input the user did not name, from the roots. An input given
     explicitly is never overridden."""
     tables, pdbdirs = walk_inputs(a.root)
+    pdb_count = dict(pdbdirs)
     log.append(f"[scan] {len(tables)} table(s) and {len(pdbdirs)} conformer "
                f"directory/ies under: {', '.join(a.root)}")
     for attr, pats, kind in WANTED:
@@ -934,25 +987,52 @@ def discover(a, log):
                                  if kind == "table" else p.lower())
                        for x in pats)]
         if hits:
-            # shortest path wins: the least qualified name is usually the
-            # top-level product rather than an intermediate
-            best = min(hits, key=lambda p: (len(p), p))
+            # the widest table wins, not the shortest path. A run directory can
+            # hold a two-row smoke test beside the real thing under the same
+            # filename, and the shortest name is as often the former as the
+            # latter, so the file is chosen by how much data is in it
+            if kind == "table":
+                best = max(hits, key=lambda p: (table_rows(p), -len(p)))
+            else:
+                best = max(hits, key=lambda p: (pdb_count.get(p, 0), -len(p)))
             setattr(a, attr, best)
-            log.append(f"[found] {attr:10s} -> {best}"
-                       + (f"   ({len(hits)} candidates)" if len(hits) > 1 else ""))
+            size = (f"{table_rows(best)} rows" if kind == "table"
+                    else f"{pdb_count.get(best, 0)} pdb")
+            log.append(f"[found] {attr:10s} -> {best}  ({size})")
+            # every rejected candidate is named, so a wrong pick is visible
+            # here rather than only in the figure it produces
+            for h in sorted(hits, key=lambda p: -(table_rows(p) if kind == "table"
+                                                  else pdb_count.get(p, 0))):
+                if h != best:
+                    hs = (f"{table_rows(h)} rows" if kind == "table"
+                          else f"{pdb_count.get(h, 0)} pdb")
+                    log.append(f"         also: {h}  ({hs})")
         else:
             log.append(f"[none ] {attr:10s} -> no match under the roots")
     return log
 
 
-def inventory(roots):
+def inventory(roots, match=None, columns_only=False):
     """Print what is reachable and what is inside it, and stop. This is the
     step to run first: it shows the column names the figures will be matched
     against, without producing any figure or any number that could be mistaken
     for a result."""
     tables, pdbdirs = walk_inputs(roots)
+    n_all_t, n_all_d = len(tables), len(pdbdirs)
+    if match:
+        rx = re.compile(match, re.I)
+        tables = [p for p in tables if rx.search(p)]
+        pdbdirs = [(d, n) for d, n in pdbdirs if rx.search(d)]
     print(f"# inventory of: {', '.join(roots)}")
-    print(f"# {len(tables)} table(s), {len(pdbdirs)} directory/ies of conformers\n")
+    if match:
+        print(f"# filter --match {match!r}: {len(tables)} of {n_all_t} table(s), "
+              f"{len(pdbdirs)} of {n_all_d} conformer directory/ies")
+    else:
+        print(f"# {n_all_t} table(s), {n_all_d} directory/ies of conformers")
+        if n_all_t > 40:
+            print(f"# that is a lot to read. Narrow it with --match, e.g."
+                  f"\n#     --match 'interact|comparison|anchor'")
+    print()
     for p in tables:
         try:
             t = read_table(p)
@@ -961,9 +1041,10 @@ def inventory(roots):
             continue
         print(f"{p}")
         print(f"    {len(t)} rows x {len(t.columns)} columns")
-        for c in t.columns:
-            kind = "num" if pd.api.types.is_numeric_dtype(t[c]) else "str"
-            print(f"      {kind}  {c}")
+        if not columns_only:
+            for c in t.columns:
+                kind = "num" if pd.api.types.is_numeric_dtype(t[c]) else "str"
+                print(f"      {kind}  {c}")
         print()
     for d, n in pdbdirs:
         print(f"{d}\n    {n} PDB file(s)\n")
@@ -1003,6 +1084,15 @@ def main():
                          "Any input not named explicitly is looked for here, "
                          "so pointing at your two working directories is "
                          "usually enough")
+    ap.add_argument("--match",
+                    help="with --inventory, show only paths matching this "
+                         "regex. Use it when the roots hold hundreds of tables")
+    ap.add_argument("--columns-only", action="store_true",
+                    help="with --inventory, print sizes but not column names")
+    ap.add_argument("--res1", default="VAL116", help="figure 7: first residue")
+    ap.add_argument("--atom1", default="CG1", help="figure 7: atom of --res1")
+    ap.add_argument("--res2", default="ILE117", help="figure 7: second residue")
+    ap.add_argument("--atom2", default="CD1", help="figure 7: atom of --res2")
     ap.add_argument("--inventory", action="store_true",
                     help="walk the roots, print every table found with its "
                          "columns and every directory of conformer PDBs, then "
@@ -1016,7 +1106,7 @@ def main():
     a = ap.parse_args()
 
     if a.inventory:
-        return inventory(a.root or ["."])
+        return inventory(a.root or ["."], a.match, a.columns_only)
 
     log_into = []
     if a.root:
@@ -1114,7 +1204,8 @@ def main():
     if a.scan:
         if os.path.exists(a.scan):
             r = figure_methyl_access(a.scan, a.outdir, log, a.scan_sheet,
-                                     a.label_a1, a.label_a2)
+                                     a.label_a1, a.label_a2,
+                                     a.res1, a.atom1, a.res2, a.atom2)
             if r:
                 made.append(r)
         else:
