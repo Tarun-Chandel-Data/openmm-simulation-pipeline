@@ -108,6 +108,25 @@ def pick_col(df, *patterns, exclude=()):
     return None
 
 
+def emptiest_corner(xs, ys, xlim, ylim):
+    """Axes-fraction anchor and alignment for a text block, in whichever corner
+    holds fewest points. Placing a key at a fixed corner works until the data
+    moves there, which is how a label ends up over the points it describes."""
+    xs, ys = np.asarray(xs, float), np.asarray(ys, float)
+    fx = (xs - xlim[0]) / ((xlim[1] - xlim[0]) or 1.0)
+    fy = (ys - ylim[0]) / ((ylim[1] - ylim[0]) or 1.0)
+    best, best_n = None, None
+    for hx, ha in ((0.03, "left"), (0.97, "right")):
+        for hy, va in ((0.97, "top"), (0.03, "bottom")):
+            # count points inside the 45% x 40% block the text would occupy
+            in_x = (fx < 0.45) if ha == "left" else (fx > 0.55)
+            in_y = (fy > 0.60) if va == "top" else (fy < 0.40)
+            n = int((in_x & in_y).sum())
+            if best_n is None or n < best_n:
+                best, best_n = (hx, hy, ha, va), n
+    return best
+
+
 def matched_a1a2(df, *patterns, exclude=()):
     """A matched pair of numeric columns describing the same quantity for the
     two subunits, e.g. (a1_dmin, a2_dmin). Returns (col_a1, col_a2) or None.
@@ -550,6 +569,10 @@ def figure_matched_pairs(g, cut, dock, outdir, log):
     j["pred"] = j[a2c] - j[a1c]
 
     log.append(f"\n=== FIGURE 3 : scaffold members with docking, n = {len(j)} ===")
+    log.append(f"  populations: {len(g)} scaffold members (from the measured "
+               f"set), {len(dock)} rows in the docking table, "
+               f"{len(j)} in both. Figures 1 and 2 use different populations: "
+               f"figure 1 needs only measurement, figure 3 needs both")
     r, p = spearmanr(j.pred, j.selectivity_log)
     log.append(f"  Spearman(predicted, measured) = {r:+.3f}  p = {p:.3f}")
     log.append(f"  measured spans {j.selectivity_log.max()-j.selectivity_log.min():.2f} "
@@ -729,7 +752,7 @@ def figure_affinity_dispersion(path, outdir, log, sheet=None,
 
 # ---------------------------------------------------------------- figure 5
 def figure_anchor_distance(p_a1, p_a2, outdir, log, xtal=None, cutoff=HB_CUTOFF,
-                           lab1="a1", lab2="a2"):
+                           lab1="a1", lab2="a2", smooth=0):
     """Separation of the hydrogen-bonding anchors at the divergent hinge over the
     trajectories of each subunit: time course, distribution, and the fraction of
     frames within hydrogen-bonding range. Crystal values are drawn only if given
@@ -788,9 +811,12 @@ def figure_anchor_distance(p_a1, p_a2, outdir, log, xtal=None, cutoff=HB_CUTOFF,
                                         gridspec_kw={"width_ratios": [1.5, 1, 0.8]})
     for tag, lab, col in (("a1", lab1, C_A1), ("a2", lab2, C_A2)):
         o = out[tag]
-        axA.plot(o["t"], o["d"], color=col, lw=0.4, alpha=0.55)
-        # running mean, window = 1% of the trajectory, so the trend is visible
-        w = max(1, len(o["d"]) // 100)
+        # the raw trace stays, faintly, because it carries the excursions the
+        # occupancy percentage is computed from; the smoothed line on top is
+        # what the eye should follow
+        axA.plot(o["t"], o["d"], color=col, lw=0.3, alpha=0.22)
+        w = smooth if smooth else max(3, len(o["d"]) // 25)
+        w = min(w, max(3, len(o["d"]) // 2))
         axA.plot(o["t"], pd.Series(o["d"]).rolling(w, center=True,
                                                    min_periods=1).mean(),
                  color=col, lw=1.4, label=lab)
@@ -914,27 +940,48 @@ def figure_ensemble_overlap(dir_a1, dir_a2, outdir, log, lab1="a1", lab2="a2"):
     r1 = [r for r, _ in k1]
     r2 = [r for r, _ in k2]
     s1, s2 = set(r1), set(r2)
-    best_off, best_n = 0, -1
-    for off in range(-30, 31):
-        n_hit = len(s1 & {r + off for r in s2})
-        if n_hit > best_n:
-            best_off, best_n = off, n_hit
-    shared = sorted(s1 & {r + off for r in s2 for off in (best_off,)})
-    if len(shared) < 3:
-        log.append(f"figure 6 skipped: the two ensembles share only "
-                   f"{len(shared)} residue(s) at the best offset; no "
-                   f"correspondence to compare over")
+    floor = max(20, int(0.3 * min(len(s1), len(s2))))
+
+    # The offset is chosen by how well the structures agree once matched, not
+    # by how many residue numbers coincide. Counting cannot separate the right
+    # alignment from a wrong one: two chains both numbered from 1 give the same
+    # count at every offset that keeps them overlapping, so the count ties and
+    # whichever was tried first wins, right or wrong. Superposing under each
+    # candidate and keeping the lowest RMSD distinguishes them.
+    cands = []
+    for off in range(-60, 61):
+        shared = sorted(s1 & {r + off for r in s2})
+        if len(shared) < floor:
+            continue
+        j1 = [r1.index(r) for r in shared]
+        j2 = [r2.index(r - off) for r in shared]
+        # median over a few conformer pairs, so one odd conformer cannot
+        # decide the alignment for the whole ensemble
+        rms = float(np.median([_kabsch_rmsd(X1[a][j1], X2[a][j2])
+                               for a in range(min(3, len(X1), len(X2)))]))
+        cands.append((rms, -len(shared), off, shared, j1, j2))
+    if not cands:
+        log.append(f"figure 6 skipped: no offset matches at least {floor} "
+                   f"residues between the two ensembles")
         return None
-    i1 = [r1.index(r) for r in shared]
-    i2 = [r2.index(r - best_off) for r in shared]
+    rms, _, best_off, shared, i1, i2 = min(cands)
     X1c, X2c = X1[:, i1], X2[:, i2]
-    log.append(f"  cross comparison over {len(shared)} residues matched at "
-               f"offset {best_off:+d} "
+    log.append(f"  cross comparison over {len(shared)} residues at offset "
+               f"{best_off:+d}, chosen by lowest superposed RMSD ({rms:.2f} A) "
+               f"among {len(cands)} candidate offsets "
                f"({X1.shape[1]} and {X2.shape[1]} residues available)")
+    runner = sorted(cands)[1] if len(cands) > 1 else None
+    if runner:
+        log.append(f"  next best offset {runner[2]:+d} at {runner[0]:.2f} A")
+    if rms > 3.0:
+        log.append(f"  WARNING: even the best alignment leaves {rms:.2f} A "
+                   f"between the two first conformers. For two subunits of one "
+                   f"protein that is too large to be a correspondence. Treat "
+                   f"the between-subunit distribution below as unestablished "
+                   f"and check that the two directories hold what you expect "
+                   f"(same chain, same atom selection, comparable numbering).")
     if len(shared) < 0.5 * min(X1.shape[1], X2.shape[1]):
-        log.append(f"  warning: that is under half of either ensemble; check "
-                   f"the residue numbering before reading the between-subunit "
-                   f"distribution")
+        log.append(f"  warning: that is under half of either ensemble")
 
     w1 = _pairwise(X1); w2 = _pairwise(X2); cr = _pairwise(X1c, X2c)
     iu1 = np.triu_indices(len(X1), 1); iu2 = np.triu_indices(len(X2), 1)
@@ -1097,13 +1144,16 @@ def figure_methyl_access(path, outdir, log, sheet=None, lab1="a1", lab2="a2",
     axA.set_title("A   closest ligand-carbon approach", loc="left",
                   fontsize=9, weight="bold")
     # counts go inside the axes, where they cannot collide with panel B's title
-    for i, (txt, c) in enumerate((
-            (f"above diagonal ({lab2} further):  {n_pos}/{n}", HL),
-            (f"below diagonal ({lab1} further):  {n_neg}/{n}", C_A1),
-            (f"sign test (two-sided) p = {bt.pvalue:.1e}", "black"))):
-        axA.text(0.03, 0.97 - 0.07*i, txt, transform=axA.transAxes,
-                 fontsize=7, va="top", ha="left", color=c, weight="bold",
-                 bbox=dict(facecolor="white", alpha=0.75, edgecolor="none",
+    kx, ky, kha, kva = emptiest_corner(sub[d1], sub[d2], lim, lim)
+    lines = ((f"above diagonal ({lab2} further):  {n_pos}/{n}", HL),
+             (f"below diagonal ({lab1} further):  {n_neg}/{n}", C_A1),
+             (f"sign test (two-sided) p = {bt.pvalue:.1e}", "black"))
+    step = 0.065
+    for i, (txt, c) in enumerate(lines):
+        dy = (-step*i) if kva == "top" else (step*(len(lines)-1-i))
+        axA.text(kx, ky + dy, txt, transform=axA.transAxes,
+                 fontsize=7, va=kva, ha=kha, color=c, weight="bold",
+                 bbox=dict(facecolor="white", alpha=0.8, edgecolor="none",
                            pad=1.2), zorder=5)
 
     if has_occ:
@@ -1296,6 +1346,12 @@ def main():
     ap.add_argument("--anchor-a2", help="anchor separation over the CK2a' trajectory")
     ap.add_argument("--xtal", default="",
                     help="crystal anchor separations as a1,a2 in angstrom (figure 5)")
+    ap.add_argument("--smooth", type=int, default=0,
+                    help="figure 5: running-mean window in frames for the "
+                         "trend line. 0 uses 4 percent of the trajectory. The "
+                         "raw trace is always drawn underneath, and the "
+                         "percentages are computed from the raw values, never "
+                         "from the smoothed line")
     ap.add_argument("--hb-cutoff", type=float, default=HB_CUTOFF,
                     help="donor-acceptor distance counted as hydrogen bonded")
     ap.add_argument("--ens-a1", help="directory of CK2a conformer PDBs (figure 6)")
@@ -1429,7 +1485,7 @@ def main():
         else:
             r = figure_anchor_distance(a.anchor_a1, a.anchor_a2, a.outdir, log,
                                        parse_pair(a.xtal), a.hb_cutoff,
-                                       a.label_a1, a.label_a2)
+                                       a.label_a1, a.label_a2, a.smooth)
             if r:
                 made.append(r)
 
