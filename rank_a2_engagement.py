@@ -125,19 +125,24 @@ def main():
             keep.append("d_" + c)
     ranked[keep].to_csv(out_csv, index=False)
 
-    log.append(f"\n  top {a.top}   ({a.label} | {a.label1})"
-               if other else f"\n  top {a.top}:")
+    # an aligned table with a header row: a line reading "a2_n_hbond 9 | 6"
+    # names one column while carrying two numbers, which invites the second to
+    # be missed or misread
+    show = []
+    for c, fmt in ((a.hbond_col, "{:g}"), (a.pose_col, "{:.3f}"),
+                   (a.affinity_col, "{:.2f}")):
+        show.append((c, fmt))
+        if c in other:
+            show.append((other[c], fmt))
+    widths = [max(len(c), 8) for c, _ in show]
+    log.append("")
+    log.append("  " + "rank  " + f"{'compound':16s}"
+               + "  ".join(f"{c:>{w}s}" for (c, _), w in zip(show, widths)))
     for _, r in ranked.head(a.top).iterrows():
-        bits = []
-        for c, fmt in ((a.hbond_col, "{:g}"), (a.pose_col, "{:.3f}"),
-                       (a.affinity_col, "{:.2f}")):
-            v = fmt.format(r[c])
-            if c in other:
-                bits.append(f"{c} {v} | {fmt.format(r[other[c]])}")
-            else:
-                bits.append(f"{c} {v}")
-        log.append(f"    {r['rank']:3d}  {str(r[a.id_col]):16s} "
-                   + "   ".join(bits))
+        cells = [f"{fmt.format(r[c]):>{w}s}"
+                 for (c, fmt), w in zip(show, widths)]
+        log.append(f"  {r['rank']:4d}  {str(r[a.id_col]):16s}"
+                   + "  ".join(cells))
 
     sub = ranked.head(a.top).iloc[::-1]          # best at the top of the axis
     y = np.arange(len(sub))
