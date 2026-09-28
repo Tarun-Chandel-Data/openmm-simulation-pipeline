@@ -44,6 +44,11 @@ def main():
                         "are carried beside the ranked ones, so a compound "
                         "engaging both equally cannot be mistaken for one that "
                         "prefers the ranked subunit")
+    p.add_argument("--min-pose", type=float,
+                   help="drop compounds whose pose score is below this before "
+                        "ranking. Precedence is strict, so without a floor one "
+                        "extra hydrogen bond outranks any pose difference "
+                        "however large")
     p.add_argument("--no-compare", action="store_true",
                    help="rank on the second subunit alone, without showing the "
                         "first")
@@ -74,13 +79,23 @@ def main():
                     pd.api.types.is_numeric_dtype(d[cand]):
                 other[c] = cand
     d = d.dropna(subset=cols).copy()
+    n_raw = len(d)
+    if a.min_pose is not None:
+        before = len(d)
+        d = d[d[a.pose_col] >= a.min_pose]
+        log_pre = (f"[filter] {len(d)} of {before} compounds have "
+                   f"{a.pose_col} >= {a.min_pose:g}")
+    else:
+        log_pre = None
     # identifier last, so an otherwise complete tie is still reproducible
     ranked = d.sort_values(cols + [a.id_col],
                            ascending=[False]*len(cols) + [True],
                            kind="mergesort").reset_index(drop=True)
     ranked.insert(0, "rank", np.arange(1, len(ranked) + 1))
 
-    log = [f"[in] {len(d)} compounds from {a.table}",
+    log = [f"[in] {n_raw} compounds from {a.table}"] + \
+          ([log_pre] if log_pre else []) + \
+          [
            f"     precedence: {a.hbond_col} > {a.pose_col} > {a.affinity_col}"]
     hb = ranked[a.hbond_col]
     log.append(f"     {a.hbond_col}: {hb.min():g} to {hb.max():g}, "
@@ -110,12 +125,19 @@ def main():
             keep.append("d_" + c)
     ranked[keep].to_csv(out_csv, index=False)
 
-    log.append(f"\n  top {a.top}:")
+    log.append(f"\n  top {a.top}   ({a.label} | {a.label1})"
+               if other else f"\n  top {a.top}:")
     for _, r in ranked.head(a.top).iterrows():
+        bits = []
+        for c, fmt in ((a.hbond_col, "{:g}"), (a.pose_col, "{:.3f}"),
+                       (a.affinity_col, "{:.2f}")):
+            v = fmt.format(r[c])
+            if c in other:
+                bits.append(f"{c} {v} | {fmt.format(r[other[c]])}")
+            else:
+                bits.append(f"{c} {v}")
         log.append(f"    {r['rank']:3d}  {str(r[a.id_col]):16s} "
-                   f"{a.hbond_col} {r[a.hbond_col]:g}   "
-                   f"{a.pose_col} {r[a.pose_col]:.3f}   "
-                   f"{a.affinity_col} {r[a.affinity_col]:.2f}")
+                   + "   ".join(bits))
 
     sub = ranked.head(a.top).iloc[::-1]          # best at the top of the axis
     y = np.arange(len(sub))
