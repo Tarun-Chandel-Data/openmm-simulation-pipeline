@@ -38,6 +38,14 @@ plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 9,
 C_A1, C_A2, GREY, HLC = "#2e5eaa", "#d1495b", "#b9b9b9", "#1b7a4b"
 
 
+def ordinal(n):
+    """1st, 2nd, 3rd, 63rd. The record is read by people."""
+    n = int(round(n))
+    if 10 <= n % 100 <= 20:
+        return f"{n}th"
+    return f"{n}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th') }"
+
+
 def fmt(series):
     """Integer counts are written as integers. A contacted-residue count
     printed as 3.00 invites it to be read as a continuous measurement."""
@@ -140,16 +148,25 @@ def main():
     log.append(f"     {lab1}-preferring  (< {c - a.noise:+.3f}): {n_a1}")
     log.append(f"     within the band                 : {n_flat}")
     log.append(f"     {lab2}-preferring (> {c + a.noise:+.3f}): {n_a2}")
-    # A set whose values lie wholly on one side of zero carries a constant
-    # offset between the two sides. Counting against zero then measures that
-    # constant, which is a property of how the two receptors were prepared,
-    # not of the ligands being compared.
-    if v.min() > 0 or v.max() < 0:
-        log.append(f"     [note] every value falls on one side of zero. The "
-                   f"two sides differ by a constant {np.median(v):+.3f} before "
-                   f"any compound is considered, so counts against zero "
-                   f"measure that constant. --center median reports what "
-                   f"stands out from the set instead")
+    # A set centred well away from zero carries a constant offset between the
+    # two sides, and counting against zero then measures that constant: a
+    # property of how the two receptors were prepared, not of the ligands.
+    #
+    # Requiring every value to fall on one side is too strict to catch it. A
+    # set can straddle zero slightly and still be plainly offset, which is
+    # what a lopsided count shows: one side empty while the other is not, or a
+    # median sitting an appreciable part of the band away from zero.
+    med = float(np.median(v))
+    lopsided = (n_a1 == 0) != (n_a2 == 0)
+    off_centre = abs(med) > 0.5 * a.noise
+    if abs(c) < 1e-9 and (lopsided or off_centre):
+        log.append(f"     [note] this set is centred on {med:+.3f}, not zero "
+                   f"({abs(med)/a.noise:.2f} x the band half-width), and the "
+                   f"counts against zero are {n_a1} against {n_a2}. The two "
+                   f"sides differ by that constant before any compound is "
+                   f"considered, so counting against zero measures the "
+                   f"constant. --center median reports what stands out from "
+                   f"the set instead")
 
     has_aff = {a.val1_col, a.val2_col} <= set(d.columns)
     fig, axes = plt.subplots(1, 2 if has_aff else 1,
@@ -187,7 +204,7 @@ def main():
                          arrowprops=dict(arrowstyle="-|>", color=HLC, lw=1.4))
             n_tied = int((v == hv).sum())
             log.append(f"     {a.highlight}: {hv:+.2f}, rank {hi_i+1} of "
-                       f"{len(v)} ({100*(v < hv).mean():.0f}th percentile)"
+                       f"{len(v)} ({ordinal(100*(v < hv).mean())} percentile)"
                        + (f"; {n_tied} compounds share this value"
                           if n_tied > 1 else ""))
         else:
