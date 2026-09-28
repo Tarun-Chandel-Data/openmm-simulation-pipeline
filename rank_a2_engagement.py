@@ -89,9 +89,19 @@ def main():
     n_raw = len(d)
     if a.min_pose is not None:
         before = len(d)
-        d = d[d[a.pose_col] >= a.min_pose]
+        # both poses must clear the floor. Testing only the ranked subunit
+        # lets a compound through whose other pose failed to dock, and a pose
+        # that failed makes few contacts whatever the chemistry, so its
+        # difference measures the failure rather than a preference.
+        cols_pose = [a.pose_col]
+        if a.pose_col in other:
+            cols_pose.append(other[a.pose_col])
+        keep = np.ones(len(d), bool)
+        for c in cols_pose:
+            keep &= (d[c] >= a.min_pose).to_numpy()
+        d = d[keep]
         log_pre = (f"[filter] {len(d)} of {before} compounds have "
-                   f"{a.pose_col} >= {a.min_pose:g}")
+                   + " and ".join(f"{c} >= {a.min_pose:g}" for c in cols_pose))
     else:
         log_pre = None
     # identifier last, so an otherwise complete tie is still reproducible
