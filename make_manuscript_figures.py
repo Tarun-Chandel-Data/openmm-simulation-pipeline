@@ -69,7 +69,21 @@ plt.rcParams.update({
     "axes.linewidth": 0.8, "axes.spines.top": False, "axes.spines.right": False,
     "figure.dpi": 300,
 })
-C_A1, C_A2, GREY, HL = "#2e5eaa", "#d1495b", "#6c6c6c", "#1b7a4b"
+# Two colour jobs, kept apart so a hue always means one thing.
+#   subunits  : a diverging pair, blue and red, with grey reserved for the
+#               neutral midpoint (a tie), which is the one legitimate use of a
+#               chroma-free colour here
+#   linker    : a categorical pair, purple and green, for the structural split,
+#               so it is never confused with the subunit colours
+# Checked with the palette validator: the four together pass the lightness
+# band, chroma floor, colour-vision separation, normal-vision floor and
+# contrast against the surface. The previous set used grey as a category
+# beside green, which failed at dE 11.5 in normal vision and 2.6 under
+# protanopia: those two were not reliably distinguishable.
+C_A1, C_A2 = "#2e5eaa", "#d1495b"        # diverging: subunit a1 / a2
+C_SHORT, C_LONG = "#7b5cd6", "#1b7a4b"   # categorical: below / at-or-above cut
+GREY = "#6c6c6c"                         # neutral midpoint and recessive ink
+HL = C_LONG                              # backwards-compatible alias
 HB_CUTOFF = 3.5          # heavy-atom donor-acceptor distance, angstrom
 
 
@@ -352,7 +366,7 @@ def figure_scaffold_sar(d, outdir, min_members, log, lab1="a1", lab2="a2"):
 
     rng = np.random.default_rng(0)
     for n, gg in g.groupby("linker"):
-        col = HL if n >= cut else GREY
+        col = C_LONG if n >= cut else C_SHORT
         x = np.full(len(gg), n) + rng.uniform(-0.11, 0.11, len(gg))
         axA.scatter(x, gg.selectivity_log, s=34, color=col,
                     edgecolor="white", linewidth=0.6, zorder=3)
@@ -370,10 +384,10 @@ def figure_scaffold_sar(d, outdir, min_members, log, lab1="a1", lab2="a2"):
     _pad = 0.13 * (_hi - _lo)
     axA.set_ylim(_lo - _pad, _hi + _pad)
     axA.text(0.99, 0.985, f"{lab2}-preferring", transform=axA.transAxes,
-             ha="right", va="top", fontsize=7.5, color=HL,
+             ha="right", va="top", fontsize=7.5, color=C_A2,
              bbox=dict(facecolor="white", alpha=0.8, edgecolor="none", pad=1.2))
     axA.text(0.99, 0.015, f"{lab1}-preferring", transform=axA.transAxes,
-             ha="right", va="bottom", fontsize=7.5, color=GREY,
+             ha="right", va="bottom", fontsize=7.5, color=C_A1,
              bbox=dict(facecolor="white", alpha=0.8, edgecolor="none", pad=1.2))
 
     if has_aff:
@@ -526,7 +540,7 @@ def figure_benchmark(paired, dock, outdir, log, bench=None):
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.4, 0.42*len(t)+2.2),
                                    gridspec_kw={"width_ratios": [1.15, 1]})
     y = np.arange(len(t))
-    ax1.barh(y, t.rho, color=[HL if v > 0 else C_A1 for v in t.rho],
+    ax1.barh(y, t.rho, color=[C_A2 if v > 0 else C_A1 for v in t.rho],
              height=0.6, edgecolor="white")
     ax1.axvline(0, color="black", lw=0.9)
     ax1.set_yticks(y); ax1.set_yticklabels(t.criterion, fontsize=7.5)
@@ -540,8 +554,8 @@ def figure_benchmark(paired, dock, outdir, log, bench=None):
     ax1.set_title("A   Correlation with measurement", loc="left",
                   fontsize=9.5, weight="bold")
 
-    ax2.barh(y-0.17, t.top, height=0.32, color=HL, label="top-ranked")
-    ax2.barh(y+0.17, t.bot, height=0.32, color=GREY, label="bottom-ranked")
+    ax2.barh(y-0.17, t.top, height=0.32, color=C_LONG, label="top-ranked")
+    ax2.barh(y+0.17, t.bot, height=0.32, color=C_SHORT, label="bottom-ranked")
     ax2.axvline(0, color="black", lw=0.9)
     ax2.set_yticks(y); ax2.set_yticklabels([])
     ax2.set_xlabel("Mean measured selectivity of ranked subsets")
@@ -584,7 +598,7 @@ def figure_matched_pairs(g, cut, dock, outdir, log):
                f"log units; predicted spans {j.pred.max()-j.pred.min():.2f}")
 
     fig, ax = plt.subplots(figsize=(4.0, 3.4))
-    col = [HL if v >= cut else GREY for v in j.linker]
+    col = [C_LONG if v >= cut else C_SHORT for v in j.linker]
     ax.scatter(j.selectivity_log, j.pred, s=42, c=col,
                edgecolor="white", linewidth=0.6, zorder=3)
     ax.axhline(0, color="black", lw=0.7, ls=":")
@@ -593,9 +607,9 @@ def figure_matched_pairs(g, cut, dock, outdir, log):
     ax.set_ylabel("Predicted difference (a2 − a1)")
     ax.set_title(f"ρ = {r:+.2f}  (p = {p:.2f}, n = {len(j)})",
                  loc="left", fontsize=9.5, weight="bold")
-    ax.legend(handles=[Line2D([], [], marker="o", ls="", color=GREY,
+    ax.legend(handles=[Line2D([], [], marker="o", ls="", color=C_SHORT,
                               label=f"< {cut} CH₂"),
-                       Line2D([], [], marker="o", ls="", color=HL,
+                       Line2D([], [], marker="o", ls="", color=C_LONG,
                               label=f"≥ {cut} CH₂")],
               frameon=False, fontsize=8, loc="best")
     fig.tight_layout()
@@ -756,8 +770,42 @@ def figure_affinity_dispersion(path, outdir, log, sheet=None,
 
 
 # ------------------------------------------------- preference (figures 8, 9)
+def _split_strip(ax, n1, n2, lab1, lab2, n_tie=0):
+    """One bar, split where the set splits, with the counts beside it.
+
+    The ranked profile below answers 'by how much'. This answers 'how many,
+    which way' without the reader having to count bars, which is the question
+    most people bring to the figure first."""
+    from matplotlib.patches import Rectangle
+    total = n1 + n2 + n_tie
+    if total <= 0:
+        ax.axis("off")
+        return
+    ax.set_xlim(0, total); ax.set_ylim(0, 1); ax.axis("off")
+    gap = total * 0.005                 # surface gap so the fills never touch
+    x = 0.0
+    for n, c in ((n1, C_A1), (n_tie, GREY), (n2, C_A2)):
+        if n <= 0:
+            continue
+        ax.add_patch(Rectangle((x, 0.05), max(n - gap, total*0.002), 0.45,
+                               facecolor=c, edgecolor="none"))
+        x += n
+    # each side is labelled over its own segment, in words, so the figure can
+    # be read without decoding the colours first
+    ax.text(0, 0.60, f"{n1} {lab1}  ({100*n1/total:.0f}%)",
+            ha="left", va="bottom", color=C_A1, fontsize=9, weight="bold")
+    ax.text(total, 0.60, f"{n2} {lab2}  ({100*n2/total:.0f}%)",
+            ha="right", va="bottom", color=C_A2, fontsize=9, weight="bold")
+    ax.text(total/2, 0.60, f"n = {total}", ha="center", va="bottom",
+            color=GREY, fontsize=8)
+    if n_tie:
+        ax.text(n1 + n_tie/2, -0.05, f"{n_tie} tied", ha="center", va="top",
+                color=GREY, fontsize=7.5)
+
+
 def _preference_panel(ax, v, lab1, lab2, ylabel, fold=1.0,
-                      highlight=None, hl_label=None, title=None):
+                      highlight=None, hl_label=None, title=None,
+                      show_counts=True):
     """One compound per bar, sorted by preference, signed so that each side of
     zero is one subunit. Sorting is the whole point: it turns a set of numbers
     into a profile, and shows at a glance how much of the set prefers either
@@ -790,10 +838,12 @@ def _preference_panel(ax, v, lab1, lab2, ylabel, fold=1.0,
                     ha="center", fontsize=7.5, weight="bold",
                     arrowprops=dict(arrowstyle="-", lw=0.9, color="black"))
 
-    key = [(f"{lab2}-preferring:  {n_a2} of {len(vs)}", C_A2),
-           (f"{lab1}-preferring:  {n_a1} of {len(vs)}", C_A1)]
-    if n_tie:
-        key.append((f"no preference:  {n_tie}", GREY))
+    key = []
+    if show_counts:
+        key = [(f"{lab2}-preferring:  {n_a2} of {len(vs)}", C_A2),
+               (f"{lab1}-preferring:  {n_a1} of {len(vs)}", C_A1)]
+        if n_tie:
+            key.append((f"no preference:  {n_tie}", GREY))
     if fold:
         key.append((f"beyond {fold:g} log unit:  {strong2} {lab2} / "
                     f"{strong1} {lab1}", "black"))
@@ -845,12 +895,18 @@ def figure_docked_preference(paired, dock, outdir, log, lab1="a1", lab2="a2"):
                        f"Predicted  {lab2} − {lab1}", None))
         log.append(f"  prediction taken as {c2} − {c1}")
 
-    fig, axes = plt.subplots(1, len(panels), figsize=(4.3*len(panels), 3.4))
-    axes = np.atleast_1d(axes)
-    for ax, (tag, v, ylab, fold), letter in zip(axes, panels, "AB"):
+    fig, axes = plt.subplots(2, len(panels), squeeze=False,
+                             figsize=(4.6*len(panels), 3.9),
+                             gridspec_kw={"height_ratios": [1, 4.2]})
+    for col, ((tag, v, ylab, fold), letter) in enumerate(zip(panels, "AB")):
+        ax = axes[1][col]
         ok = np.isfinite(v)
         st = _preference_panel(ax, v[ok], lab1, lab2, ylab, fold=fold,
-                               title=f"{letter}   {tag}")
+                               title=None, show_counts=False)
+        _split_strip(axes[0][col], st["n_a1"], st["n_a2"], lab1, lab2,
+                     st["n_tie"])
+        axes[0][col].set_title(f"{letter}   {tag}", loc="left",
+                               fontsize=9.5, weight="bold")
         log.append(f"  {tag}: {st['n_a2']} prefer {lab2}, {st['n_a1']} prefer "
                    f"{lab1}, range {st['lo']:+.2f} to {st['hi']:+.2f} "
                    f"(span {st['hi']-st['lo']:.2f})")
@@ -922,10 +978,14 @@ def figure_variant_preference(path, outdir, log, sheet=None, lab1="a1",
                f"{os.path.basename(path)}")
     log.append(f"  preference taken as {c2} − {c1}")
 
-    fig, ax = plt.subplots(figsize=(5.0, 3.4))
+    fig, (axs, ax) = plt.subplots(2, 1, figsize=(5.4, 3.9),
+                                  gridspec_kw={"height_ratios": [1, 4.2]})
     st = _preference_panel(ax, v, lab1, lab2, f"Predicted  {lab2} − {lab1}",
                            fold=None, highlight=hl, hl_label="parent",
-                           title="Variant series preference")
+                           title=None, show_counts=False)
+    _split_strip(axs, st["n_a1"], st["n_a2"], lab1, lab2, st["n_tie"])
+    axs.set_title("Variant series preference", loc="left",
+                  fontsize=9.5, weight="bold")
     log.append(f"  {st['n_a2']} prefer {lab2}, {st['n_a1']} prefer {lab1}, "
                f"{st['n_tie']} tied")
     log.append(f"  range {st['lo']:+.3f} to {st['hi']:+.3f} "
@@ -1210,7 +1270,7 @@ def figure_ensemble_overlap(dir_a1, dir_a2, outdir, log, lab1="a1", lab2="a2"):
     bins = np.linspace(lo_b - pad, hi_b + pad, 34)
     for v, lab, col in ((v1, f"within {lab1} (mean {v1.mean():.2f} Å)", C_A1),
                         (v2, f"within {lab2} (mean {v2.mean():.2f} Å)", C_A2),
-                        (vc, f"between (mean {vc.mean():.2f} Å)", GREY)):
+                        (vc, f"between (mean {vc.mean():.2f} Å)", C_SHORT)):
         axA.hist(v, bins=bins, density=True, histtype="step", lw=1.6,
                  color=col, label=lab)
     axA.set_xlabel("Conformer-to-conformer RMSD (Å)")
@@ -1325,7 +1385,7 @@ def figure_methyl_access(path, outdir, log, sheet=None, lab1="a1", lab2="a2",
     axA.plot(lim, lim, color="black", lw=0.8, ls=":")
     # points are coloured by which side of the diagonal they fall on, so a
     # mixed result is visible as a mixed plot rather than one flat colour
-    side = np.where(diff > 0, HL, np.where(diff < 0, C_A1, GREY))
+    side = np.where(diff > 0, C_A2, np.where(diff < 0, C_A1, GREY))
     axA.scatter(sub[d1], sub[d2], s=30, c=side,
                 edgecolor="white", linewidth=0.5, zorder=3)
     axA.set_xlim(lim); axA.set_ylim(lim)
@@ -1335,7 +1395,7 @@ def figure_methyl_access(path, outdir, log, sheet=None, lab1="a1", lab2="a2",
                   fontsize=9, weight="bold")
     # counts go inside the axes, where they cannot collide with panel B's title
     kx, ky, kha, kva = emptiest_corner(sub[d1], sub[d2], lim, lim)
-    lines = ((f"above diagonal ({lab2} further):  {n_pos}/{n}", HL),
+    lines = ((f"above diagonal ({lab2} further):  {n_pos}/{n}", C_A2),
              (f"below diagonal ({lab1} further):  {n_neg}/{n}", C_A1),
              (f"sign test (two-sided) p = {bt.pvalue:.1e}", "black"))
     step = 0.065
