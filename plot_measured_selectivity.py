@@ -70,7 +70,13 @@ def main():
     p.add_argument("--top", type=int, default=12,
                    help="compounds labelled per direction in panel B")
     p.add_argument("--noise", type=float, default=0.3,
-                   help="band treated as indistinguishable from zero")
+                   help="half-width of the band treated as indistinguishable")
+    p.add_argument("--center", default="0",
+                   help="where the band sits: a number, or 'median'/'mean' to "
+                        "take it from the data. Use the data when the two "
+                        "sides carry a systematic offset, so that the counts "
+                        "report compounds that stand out from the set rather "
+                        "than compounds that cleared the offset")
     p.add_argument("--val1-col", default="p_value_a1")
     p.add_argument("--val2-col", default="p_value_a2")
     p.add_argument("--diff-col", default="selectivity_log")
@@ -117,14 +123,33 @@ def main():
     v = d[a.diff_col].values
     f_diff = fmt(d[a.diff_col])
 
-    n_a1 = int((v < -a.noise).sum())
-    n_a2 = int((v > a.noise).sum())
-    n_flat = int((np.abs(v) <= a.noise).sum())
-    log.append(f"     {lab1}-preferring  (< -{a.noise:g}): {n_a1}")
-    log.append(f"     within ±{a.noise:g} of zero      : {n_flat}")
-    log.append(f"     {lab2}-preferring (> +{a.noise:g}): {n_a2}")
+    if a.center == "median":
+        c = float(np.median(v))
+    elif a.center == "mean":
+        c = float(np.mean(v))
+    else:
+        c = float(a.center)
+
+    n_a1 = int((v < c - a.noise).sum())
+    n_a2 = int((v > c + a.noise).sum())
+    n_flat = int((np.abs(v - c) <= a.noise).sum())
     log.append(f"     range {v.min():+.2f} to {v.max():+.2f}, "
-               f"median {np.median(v):+.2f}")
+               f"median {np.median(v):+.2f}, mean {np.mean(v):+.2f}")
+    src = ("the data, " + a.center) if a.center in ("median", "mean") else "as given"
+    log.append(f"     band centred on {c:+.3f} ({src}), half-width {a.noise:g}")
+    log.append(f"     {lab1}-preferring  (< {c - a.noise:+.3f}): {n_a1}")
+    log.append(f"     within the band                 : {n_flat}")
+    log.append(f"     {lab2}-preferring (> {c + a.noise:+.3f}): {n_a2}")
+    # A set whose values lie wholly on one side of zero carries a constant
+    # offset between the two sides. Counting against zero then measures that
+    # constant, which is a property of how the two receptors were prepared,
+    # not of the ligands being compared.
+    if v.min() > 0 or v.max() < 0:
+        log.append(f"     [note] every value falls on one side of zero. The "
+                   f"two sides differ by a constant {np.median(v):+.3f} before "
+                   f"any compound is considered, so counts against zero "
+                   f"measure that constant. --center median reports what "
+                   f"stands out from the set instead")
 
     has_aff = {a.val1_col, a.val2_col} <= set(d.columns)
     fig, axes = plt.subplots(1, 2 if has_aff else 1,
@@ -133,10 +158,15 @@ def main():
                              if has_aff else None)
     axA = axes[0] if has_aff else axes
 
-    cols = [C_A1 if x < -a.noise else C_A2 if x > a.noise else GREY for x in v]
+    cols = [C_A1 if x < c - a.noise else C_A2 if x > c + a.noise else GREY
+            for x in v]
     axA.bar(np.arange(len(v)), v, color=cols, width=1.0, linewidth=0)
     axA.axhline(0, color="black", lw=0.9)
-    axA.axhspan(-a.noise, a.noise, color="#eeeeee", zorder=0)
+    axA.axhspan(c - a.noise, c + a.noise, color="#eeeeee", zorder=0)
+    if abs(c) > 1e-9:
+        axA.axhline(c, color="#777777", lw=0.9, ls="--")
+        axA.text(0.99, c, f" centre {c:+.2f} ", transform=axA.get_yaxis_transform(),
+                 ha="right", va="bottom", fontsize=6.5, color="#777777")
     axA.set_xlabel("Compounds")
     axA.set_ylabel(a.ylabel_a)
     axA.set_xlim(-1, len(v))
