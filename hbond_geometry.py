@@ -246,22 +246,31 @@ def main():
             rec[f"{a.tag}_{prop}"] = v
         rows.append(rec)
 
-    # one row per compound. More than one means the directory held several
-    # files for it, which for a pose directory normally means several
-    # receptors: the counts would then mix poses docked into different
-    # structures, so this is reported rather than silently averaged.
+    # A compound may appear in several files: repeat dockings under
+    # different seeds, or, if --match was omitted, both receptors. The single
+    # best pose across them is kept, which is the same rule as within one
+    # file, and the spread over the repeats is reported beside it because a
+    # count that moves between seeds is telling you how reproducible it is.
     d0 = pd.DataFrame(rows)
+    nh = f"{a.tag}_n_hbond"
     if len(d0) and d0["cpd_id"].duplicated().any():
-        dup = int(d0["cpd_id"].duplicated().sum())
-        ex = d0.loc[d0["cpd_id"].duplicated(keep=False), "cpd_id"].unique()[:3]
-        print(f"[warn] {dup} duplicate compound row(s); {len(d0)} rows for "
-              f"{d0['cpd_id'].nunique()} compounds, e.g. {list(ex)}")
-        print(f"       a pose directory usually holds one file per compound "
-              f"per receptor. Use --match to take only this receptor's files, "
-              f"or the counts will mix the two.")
-        rows = (d0.sort_values(f"{a.tag}_n_hbond", ascending=False)
-                  .drop_duplicates("cpd_id").to_dict("records"))
-        print(f"       keeping the highest count per compound for now")
+        per = d0.groupby("cpd_id")[nh]
+        sel = f"{a.tag}_{a.select_by}"
+        order = sel if sel in d0.columns else nh
+        keep = (d0.sort_values(order, ascending=False)
+                  .drop_duplicates("cpd_id").set_index("cpd_id"))
+        keep[f"{a.tag}_n_runs"] = per.size()
+        keep[f"{a.tag}_n_hbond_min"] = per.min()
+        keep[f"{a.tag}_n_hbond_max"] = per.max()
+        n_runs = int(per.size().median())
+        spread = (per.max() - per.min())
+        print(f"[in] {len(d0)} file(s) for {d0['cpd_id'].nunique()} compounds "
+              f"(median {n_runs} per compound)")
+        print(f"     keeping the best pose per compound by {order}")
+        print(f"     hydrogen-bond count varies across repeats for "
+              f"{int((spread > 0).sum())} of {len(spread)} compounds; "
+              f"median spread {spread.median():g}, max {spread.max():g}")
+        rows = keep.reset_index().to_dict("records")
 
     if n_noprop:
         print(f"[warn] {n_noprop} pose(s) carried no '{a.select_by}' property; "
