@@ -166,20 +166,32 @@ def main():
     sites = {lab: polar_sites(path) for lab, path in recs.items()}
     conf_sites = {}
 
+    def norm(x):
+        """A name with the separators taken out.
+
+        A pose written as EV001__a1c00__a1 names the conformer a1c00 while the
+        file holding it is a1_c00.pdb. Matching on the literal string finds
+        nothing and skips every pose, so the comparison is made on names with
+        the punctuation removed."""
+        return "".join(ch for ch in x.lower() if ch.isalnum())
+
+    ens_index = {}
+    for lab, d in ensdirs.items():
+        ix = {}
+        for e in (".pdb", ".pdbqt"):
+            for p in glob.glob(os.path.join(d, "*" + e)):
+                ix.setdefault(norm(os.path.basename(p)[: -len(e)]), p)
+        ens_index[lab] = ix
+
     def sites_for(lab, replicate):
         if lab in sites:
             return sites[lab]
-        d = ensdirs.get(lab)
-        if d is None:
+        if lab not in ens_index:
             return None
         key = (lab, replicate)
         if key not in conf_sites:
-            hits = [os.path.join(d, replicate + e) for e in (".pdb", ".pdbqt")]
-            hit = next((h for h in hits if os.path.exists(h)), None)
-            if hit is None:
-                conf_sites[key] = None
-            else:
-                conf_sites[key] = polar_sites(hit)
+            hit = ens_index[lab].get(norm(replicate))
+            conf_sites[key] = polar_sites(hit) if hit else None
         return conf_sites[key]
     log = [f"[in] {len(files)} pose files from {a.poses}",
            f"     name fields: " + ", ".join(order),
@@ -257,8 +269,15 @@ def main():
         log.append(f"     [note] {skipped_name} files not named "
                    f"COMPOUND__RECEPTOR__SEED, skipped")
     for r, n in sorted(skipped_rec.items()):
-        log.append(f"     [note] {n} files name receptor '{r}', which was not "
-                   f"given with --receptor; skipped")
+        if ensdirs:
+            have = sorted({k for ix in ens_index.values() for k in ix})[:4]
+            log.append(f"     [note] {n} files name '{r}', for which no "
+                       f"structure was found. Looked for a file matching "
+                       f"'{norm(r)}' after removing separators; the "
+                       f"directories hold e.g. {', '.join(have)}")
+        else:
+            log.append(f"     [note] {n} files name receptor '{r}', which was "
+                       f"not given with --receptor; skipped")
     if thin:
         log.append(f"     [note] {len(thin)} files hold fewer than {a.top_n} "
                    f"scored poses, e.g. " +
