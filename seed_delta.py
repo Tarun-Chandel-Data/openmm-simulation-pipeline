@@ -31,6 +31,22 @@ except ImportError:
     HAVE_SCIPY = False
 
 
+def collapse(d, keys, col, how):
+    """One value per group. pooled averages the poses kept for that group;
+    best takes the one ranked first, which is what a single-pose analysis
+    would have used."""
+    if how == "best":
+        return d.sort_values("pose_rank").groupby(keys)[col].first()
+    return d.groupby(keys)[col].mean()
+
+
+def describe_use(d, how):
+    n = int(d.groupby(["compound", "receptor", "seed"]).size().median())
+    return ("     per replicate: "
+            + (f"the best pose only, of {n} kept" if how == "best"
+               else f"the mean over {n} poses"))
+
+
 def unpaired(a, d, r1, r2):
     """Compare two receptors whose replicates are not partners.
 
@@ -56,6 +72,7 @@ def unpaired(a, d, r1, r2):
     cols = [a.col] + [c for c in also if c in d.columns and c != a.col]
     log = [f"[in] {a.poses}",
            f"     {d['compound'].nunique()} compounds",
+           describe_use(d, a.use),
            f"     {a.label1}: {len(r1)} replicates, "
            f"{a.label2}: {len(r2)} replicates, none shared",
            "",
@@ -74,7 +91,7 @@ def unpaired(a, d, r1, r2):
         for c in cols:
             # the mean over the poses kept for that replicate, then over
             # replicates, so a replicate with more poses does not weigh more
-            per = g.groupby(["receptor", "seed"])[c].mean()
+            per = collapse(g, ["receptor", "seed"], c, a.use)
             for lab, key in ((a.a1, "a1"), (a.a2, "a2")):
                 if lab not in per.index.get_level_values(0):
                     keep = False
@@ -194,6 +211,12 @@ def main():
     p.add_argument("--label2", default="CK2α′")
     p.add_argument("--col", default="n_hbond",
                    help="the criterion the ranking is on")
+    p.add_argument("--use", choices=["pooled", "best"], default="pooled",
+                   help="pooled takes the mean over the poses kept for each "
+                        "replicate; best takes only that replicate's "
+                        "highest-ranked pose. A conclusion that holds under "
+                        "one and not the other is a conclusion about the "
+                        "pooling, so both are worth running")
     p.add_argument("--also", default="CNNscore,CNNaffinity,minimizedAffinity",
                    help="further criteria reported beside the ranked one. Each "
                         "gets its own paired difference and its own sign "
@@ -259,8 +282,8 @@ def main():
         return unpaired(a, d, r1, r2)
 
     d = d[d["seed"].isin(shared)]
-    m = (d.groupby(["compound", "receptor", "seed"])[a.col]
-          .mean().unstack("receptor"))
+    m = collapse(d, ["compound", "receptor", "seed"], a.col,
+                 a.use).unstack("receptor")
     if a.a1 not in m.columns or a.a2 not in m.columns:
         sys.exit("one receptor has no rows after grouping")
     m = m.dropna(subset=[a.a1, a.a2])
@@ -270,13 +293,14 @@ def main():
     log = [f"[in] {a.poses}",
            f"     {per_seed['compound'].nunique()} compounds, "
            f"{per_seed['seed'].nunique()} seeds",
+           describe_use(d, a.use),
            f"     delta = {a.col}({a.label2}) - {a.col}({a.label1}), "
            f"formed within each seed so the shared part of the noise cancels"]
 
     extra = {}
     for c in also:
-        mm = (d.groupby(["compound", "receptor", "seed"])[c]
-               .mean().unstack("receptor"))
+        mm = collapse(d, ["compound", "receptor", "seed"], c,
+                      a.use).unstack("receptor")
         if a.a1 not in mm.columns or a.a2 not in mm.columns:
             continue
         mm = mm.dropna(subset=[a.a1, a.a2])
