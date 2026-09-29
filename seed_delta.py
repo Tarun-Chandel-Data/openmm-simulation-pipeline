@@ -164,11 +164,16 @@ def main():
                f"every seed")
     nr = r[(~r["sign_consistent"]) & (~r["reverses"]) & (~r["all_zero"])]
     if len(nr):
-        log.append(f"  {len(nr)} more are never reversed but tie in at least "
-                   f"one seed: " + ", ".join(nr["compound"]))
+        log.append(f"  {len(nr)} more "
+                   + ("is" if len(nr) == 1 else "are")
+                   + " never reversed but "
+                   + ("ties" if len(nr) == 1 else "tie")
+                   + " in at least one seed: " + ", ".join(nr["compound"]))
     rev = r[r["reverses"]]
     if len(rev):
-        log.append(f"  {len(rev)} reverse: " + ", ".join(rev["compound"]))
+        log.append(f"  {len(rev)} "
+                   + ("reverses" if len(rev) == 1 else "reverse")
+                   + ": " + ", ".join(rev["compound"]))
     up = cons[cons["delta_median"] > 0]
     dn = cons[cons["delta_median"] < 0]
     log.append(f"    {len(up)} toward {a.label2}, {len(dn)} toward "
