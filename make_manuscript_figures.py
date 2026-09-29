@@ -141,6 +141,19 @@ def emptiest_corner(xs, ys, xlim, ylim):
     return best
 
 
+def lower_is_better(col):
+    """True where a smaller number means a better result.
+
+    A difference a2 - a1 reads as 'favours a2' only for quantities where
+    larger is better. Vina affinity is kcal/mol, strain is a penalty and a
+    docking mode is a rank, so for those the sign has to be turned round or
+    the correlation is reported backwards."""
+    c = col.lower()
+    if "cnn" in c:                      # CNN affinity and pose: higher better
+        return False
+    return bool(re.search(r"affin|vina|energy|strain|intramol|rmsd|mode|rank", c))
+
+
 def matched_a1a2(df, *patterns, exclude=()):
     """A matched pair of numeric columns describing the same quantity for the
     two subunits, e.g. (a1_dmin, a2_dmin). Returns (col_a1, col_a2) or None.
@@ -507,9 +520,18 @@ def figure_benchmark(paired, dock, outdir, log, bench=None):
     if dup:
         log.append(f"  precomputed difference column(s) not plotted separately: "
                    f"{', '.join(dup)}")
+    _pre = [l for l, (c2, c1) in sorted(crits.items()) if lower_is_better(c1)]
+    if _pre:
+        log.append(f"  sign turned round for lower-is-better quantities, so "
+                   f"positive always means favours {lab2 if False else 'the second subunit'}: "
+                   f"{', '.join(_pre)}")
     rows = []
+    flipped = []
     for label, (ca2, ca1) in sorted(crits.items()):
         delta = j[ca2] - j[ca1]
+        if lower_is_better(ca1):
+            delta = -delta
+            flipped.append(label)
         ok = delta.notna() & j[mcol].notna()
         if ok.sum() < 10:
             log.append(f"  {label:28s} skipped, only {ok.sum()} paired values")
@@ -875,7 +897,8 @@ def figure_docked_preference(paired, dock, outdir, log, lab1="a1", lab2="a2"):
         log.append("figure 8 skipped: docking and paired tables share no compounds")
         return None
     meas = "selectivity_log" if "selectivity_log" in j.columns else None
-    pair = matched_a1a2(j, r"cnn") or matched_a1a2(j, r"affin|score|vina")
+    pair = (matched_a1a2(j, r"cnn", r"affin") or matched_a1a2(j, r"cnn")
+            or matched_a1a2(j, r"affin|score|vina"))
     if meas is None and pair is None:
         log.append("figure 8 skipped: no measured selectivity column and no "
                    "matched a1/a2 prediction columns")
