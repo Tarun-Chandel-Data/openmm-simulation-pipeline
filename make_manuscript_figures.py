@@ -1268,9 +1268,26 @@ def figure_ensemble_overlap(dir_a1, dir_a2, outdir, log, lab1="a1", lab2="a2"):
                f"min {v2.min():.2f}  max {v2.max():.2f}")
     log.append(f"  between       : mean {vc.mean():.2f} A  "
                f"min {vc.min():.2f}  max {vc.max():.2f}")
+    # Comparing two means says nothing about whether the distributions are
+    # distinguishable. The question is how often a pair drawn from across the
+    # subunits is more different than a pair drawn from within one: at 50 per
+    # cent the two are indistinguishable, and only near 100 per cent is a
+    # conformer of one subunit reliably unlike a conformer of the other.
+    vw = np.concatenate([v1, v2])
+    auc = float((vc[:, None] > vw[None, :]).mean()
+                + 0.5 * (vc[:, None] == vw[None, :]).mean())
+    u, pv = mannwhitneyu(vc, vw, alternative="two-sided")
     log.append(f"  between minus larger within-mean: "
-               f"{vc.mean() - max(v1.mean(), v2.mean()):+.2f} A "
-               f"({'ensembles separate' if vc.mean() > max(v1.mean(), v2.mean()) else 'ensembles overlap'})")
+               f"{vc.mean() - max(v1.mean(), v2.mean()):+.2f} A")
+    log.append(f"  a between-subunit pair exceeds a within-subunit pair "
+               f"{100*auc:.0f}% of the time (50% = indistinguishable), "
+               f"Mann-Whitney p = {pv:.2g}")
+    if auc < 0.75:
+        log.append(f"  -> the two ensembles OVERLAP. No weighting over these "
+                   f"conformers can separate the subunits, whatever the "
+                   f"difference in means")
+    else:
+        log.append(f"  -> the two ensembles are distinguishable")
 
     # scree: variance of each ensemble along its own principal components
     scree = {}
