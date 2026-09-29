@@ -79,15 +79,21 @@ def main():
         # every seed has no sign to be consistent about, which is not the same
         # as a sign that flips
         allzero = (pos == 0 and neg == 0)
+        # a seed whose difference is exactly zero is a tie, not a reversal. A
+        # compound with ties and no reversals has not been contradicted by any
+        # seed, which is a weaker claim than every seed agreeing but not the
+        # same as a sign that flips
+        ties = n - pos - neg
         consistent = (not allzero) and ((pos == n) or (neg == n))
+        reverses = (pos > 0 and neg > 0)
         sd = float(dv.std(ddof=1)) if n > 1 else np.nan
         row = {"compound": cpd, "n_seed": n, "all_zero": allzero,
                f"{a.a1}_mean": float(g[a.a1].mean()),
                f"{a.a2}_mean": float(g[a.a2].mean()),
                "delta_median": float(np.median(dv)),
                "delta_min": float(dv.min()), "delta_max": float(dv.max()),
-               "delta_sd": sd, "n_pos": pos, "n_neg": neg,
-               "sign_consistent": consistent}
+               "delta_sd": sd, "n_pos": pos, "n_neg": neg, "n_tie": ties,
+               "sign_consistent": consistent, "reverses": reverses}
         if HAVE_SCIPY and n >= 5 and not np.allclose(dv, 0):
             try:
                 row["wilcoxon_p"] = float(wilcoxon(dv).pvalue)
@@ -124,14 +130,18 @@ def main():
     log.append(f"=== ranked on delta, {a.label2} minus {a.label1} ===")
     pcol = "wilcoxon_p" in r.columns
     log.append("  " + f"{'compound':10s}{a.label1:>9s}{a.label2:>9s}"
-               + f"{'delta':>8s}{'sd':>7s}{'range':>14s}{'signs':>8s}"
+               + f"{'delta':>8s}{'sd':>7s}{'range':>14s}{'up/dn/=':>10s}"
                + (f"{'p':>9s}" if pcol else "") + "  verdict")
     for _, x in r.iterrows():
         dm, sd = x["delta_median"], x["delta_sd"]
         if x["all_zero"]:
             v = "identical in both, every seed"
+        elif x["reverses"]:
+            v = (f"sign reverses between seeds ({x['n_pos']} up, "
+                 f"{x['n_neg']} down)")
         elif not x["sign_consistent"]:
-            v = f"sign flips between seeds ({x['n_pos']} up, {x['n_neg']} down)"
+            v = (f"{x['n_tie']} of {x['n_seed']} seeds show no difference, "
+                 f"none reverse")
         elif floor == 0 or np.isnan(floor):
             v = "no noise estimate (differences do not vary by seed)"
         elif abs(dm) < floor:
@@ -144,7 +154,7 @@ def main():
                    f"{x[f'{a.a1}_mean']:9.2f}{x[f'{a.a2}_mean']:9.2f}"
                    f"{dm:+8.2f}{sd:7.2f}"
                    f"{x['delta_min']:+7.2f}{x['delta_max']:+7.2f}"
-                   f"{x['n_pos']:5d}/{x['n_neg']:<3d}"
+                   f"{x['n_pos']:5d}/{x['n_neg']}/{x['n_tie']:<3d}"
                    + (f"{x['wilcoxon_p']:9.3f}" if pcol else "")
                    + "  " + v)
 
@@ -152,6 +162,13 @@ def main():
     log.append("")
     log.append(f"  {len(cons)} of {len(r)} compounds keep the same sign in "
                f"every seed")
+    nr = r[(~r["sign_consistent"]) & (~r["reverses"]) & (~r["all_zero"])]
+    if len(nr):
+        log.append(f"  {len(nr)} more are never reversed but tie in at least "
+                   f"one seed: " + ", ".join(nr["compound"]))
+    rev = r[r["reverses"]]
+    if len(rev):
+        log.append(f"  {len(rev)} reverse: " + ", ".join(rev["compound"]))
     up = cons[cons["delta_median"] > 0]
     dn = cons[cons["delta_median"] < 0]
     log.append(f"    {len(up)} toward {a.label2}, {len(dn)} toward "
