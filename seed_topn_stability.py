@@ -1,0 +1,277 @@
+#!/usr/bin/env python3
+"""
+How much of a compound's hydrogen bond count survives changing the docking
+seed, and whether pooling the top poses of each seed steadies it.
+
+A single run reports one number per compound. Re-running with another seed
+reports a different one, because the search is stochastic. This script reads a
+set of runs that differ only in seed and reports, per compound:
+
+    single  the count from each seed's best pose, and the spread across seeds
+    pooled  the mean count over each seed's top --top-n poses, and the spread
+            of those means across seeds
+
+Pooling cannot remove the noise; it averages over it. Whether that is worth
+doing is the comparison printed at the end: if the pooled spread is no smaller
+than the single-pose spread, the poses within a seed disagree as much as the
+seeds do, and pooling has bought nothing.
+
+The spread is what a difference between two compounds has to exceed before it
+can be read as chemistry rather than search noise, so it is reported in the
+same units as the count.
+
+    python seed_topn_stability.py \
+        --receptor a1_isoform=a1.pdb --receptor a2_proteinA=a2.pdb \
+        --poses 'validate/poses/*.sdf' --top-n 8 \
+        --select-by CNNscore --match VB --out seed_stability
+"""
+import argparse, glob, os, re, sys
+from collections import defaultdict
+
+import numpy as np
+
+try:
+    import pandas as pd
+except ImportError:
+    sys.exit("needs pandas")
+try:
+    from rdkit import Chem, RDLogger
+    RDLogger.DisableLog("rdApp.*")
+except ImportError:
+    sys.exit("needs rdkit")
+
+_here = os.path.dirname(os.path.abspath(__file__))
+if _here not in sys.path:
+    sys.path.insert(0, _here)
+try:
+    from hbond_geometry import polar_sites, bonds_for_pose
+except ImportError:
+    sys.exit("needs hbond_geometry.py beside this script")
+
+
+def parse_name(path):
+    """compound, receptor, seed from COMPOUND__RECEPTOR__SEED.sdf."""
+    b = os.path.basename(path)
+    for e in (".sdf.gz", ".sdf"):
+        if b.endswith(e):
+            b = b[: -len(e)]
+            break
+    parts = b.split("__")
+    if len(parts) < 3:
+        return None
+    return parts[0], parts[1], "__".join(parts[2:])
+
+
+def prop(mol, name):
+    if mol.HasProp(name):
+        try:
+            return float(mol.GetProp(name))
+        except ValueError:
+            return None
+    return None
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--receptor", action="append", required=True,
+                   metavar="LABEL=PATH",
+                   help="the receptor each file's middle field names. Repeat "
+                        "for each one")
+    p.add_argument("--poses", required=True,
+                   help="sdf files, a directory of them, or a glob")
+    p.add_argument("--top-n", type=int, default=8,
+                   help="poses kept per seed, ranked by --select-by")
+    p.add_argument("--select-by", default="CNNscore",
+                   help="pose property ranked on. CNNscore is the pose score; "
+                        "CNNaffinity is a predicted affinity and ranks a "
+                        "different thing")
+    p.add_argument("--lower-is-better", action="store_true",
+                   help="set when --select-by is an energy, where the smallest "
+                        "value is the best pose")
+    p.add_argument("--match",
+                   help="keep only compounds whose id contains this")
+    p.add_argument("--dist", type=float, default=3.5)
+    p.add_argument("--h-dist", type=float, default=2.5)
+    p.add_argument("--angle", type=float, default=120.0)
+    p.add_argument("--antecedent-angle", type=float, default=90.0)
+    p.add_argument("--out", default="seed_stability")
+    a = p.parse_args()
+
+    recs = {}
+    for spec in a.receptor:
+        if "=" not in spec:
+            sys.exit(f"--receptor wants LABEL=PATH, got '{spec}'")
+        lab, path = spec.split("=", 1)
+        path = os.path.expanduser(path)
+        if not os.path.exists(path):
+            sys.exit(f"receptor not found: {path}")
+        recs[lab] = path
+
+    pat = os.path.expanduser(a.poses)
+    if os.path.isdir(pat):
+        files = sorted(glob.glob(os.path.join(pat, "*.sdf")))
+    else:
+        files = sorted(glob.glob(pat))
+    if not files:
+        sys.exit(f"no pose files matched {a.poses}")
+
+    sites = {lab: polar_sites(path) for lab, path in recs.items()}
+    log = [f"[in] {len(files)} pose files from {a.poses}",
+           f"     receptors: " + ", ".join(f"{k} = {os.path.basename(v)}"
+                                           for k, v in recs.items()),
+           f"     top {a.top_n} poses per seed, ranked by {a.select_by}"
+           + (" (lower is better)" if a.lower_is_better else ""),
+           f"     geometry: D-A <= {a.dist} A, H...A <= {a.h_dist} A, "
+           f"D-H...A >= {a.angle} deg, antecedent >= {a.antecedent_angle} deg"]
+
+    rows = []
+    skipped_rec, skipped_name, thin = defaultdict(int), 0, []
+    for f in files:
+        got = parse_name(f)
+        if got is None:
+            skipped_name += 1
+            continue
+        cpd, rec, seed = got
+        if a.match and a.match not in cpd:
+            continue
+        if rec not in sites:
+            skipped_rec[rec] += 1
+            continue
+        poses = []
+        for mol in Chem.SDMolSupplier(f, removeHs=False, sanitize=True):
+            if mol is None:
+                continue
+            v = prop(mol, a.select_by)
+            if v is None:
+                continue
+            poses.append((v, mol))
+        if not poses:
+            continue
+        poses.sort(key=lambda t: t[0], reverse=not a.lower_is_better)
+        # a file with fewer poses than --top-n contributes a shorter pool, so
+        # its mean rests on less; it is named rather than silently mixed in
+        if len(poses) < a.top_n:
+            thin.append((os.path.basename(f), len(poses)))
+        sel = poses[: a.top_n]
+        for k, (v, mol) in enumerate(sel, 1):
+            try:
+                mh = Chem.AddHs(mol, addCoords=True)
+            except Exception:
+                mh = mol
+            hits, _ = bonds_for_pose(mh, sites[rec], a)
+            rows.append({"compound": cpd, "receptor": rec, "seed": seed,
+                         "pose_rank": k, a.select_by: v,
+                         "n_hbond": int(sum(hits.values())),
+                         "n_residue": len(hits),
+                         "residues": ";".join(sorted(hits))})
+
+    if not rows:
+        sys.exit("no poses selected; check --select-by names a property the "
+                 "files carry, and --receptor labels match the middle field")
+    d = pd.DataFrame(rows)
+    os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
+    d.to_csv(a.out + "_poses.csv", index=False)
+
+    if skipped_name:
+        log.append(f"     [note] {skipped_name} files not named "
+                   f"COMPOUND__RECEPTOR__SEED, skipped")
+    for r, n in sorted(skipped_rec.items()):
+        log.append(f"     [note] {n} files name receptor '{r}', which was not "
+                   f"given with --receptor; skipped")
+    if thin:
+        log.append(f"     [note] {len(thin)} files hold fewer than {a.top_n} "
+                   f"scored poses, e.g. " +
+                   ", ".join(f"{n} ({k})" for n, k in thin[:3]))
+
+    seeds = sorted(d["seed"].unique())
+    log.append(f"     {d['compound'].nunique()} compounds, "
+               f"{len(seeds)} seeds ({', '.join(seeds)}), "
+               f"{len(d)} poses scored")
+
+    # per compound, per receptor, per seed: the best pose's count and the mean
+    # over the kept pool
+    g = d.sort_values("pose_rank").groupby(["compound", "receptor", "seed"])
+    per_seed = g.agg(single=("n_hbond", "first"),
+                     pooled=("n_hbond", "mean"),
+                     n_pose=("n_hbond", "size")).reset_index()
+
+    def spread(s):
+        return float(s.max() - s.min()) if len(s) > 1 else np.nan
+
+    per_cpd = per_seed.groupby(["compound", "receptor"]).agg(
+        seeds=("seed", "nunique"),
+        single_med=("single", "median"), single_spread=("single", spread),
+        pooled_mean=("pooled", "mean"), pooled_spread=("pooled", spread),
+    ).reset_index()
+    per_cpd.to_csv(a.out + "_per_compound.csv", index=False)
+
+    one_seed = per_cpd[per_cpd["seeds"] < 2]
+    ok = per_cpd[per_cpd["seeds"] >= 2]
+    if len(one_seed):
+        log.append(f"     [note] {len(one_seed)} compound-receptor pairs have "
+                   f"only one seed, so no spread can be formed for them")
+    if not len(ok):
+        sys.exit("no compound has two or more seeds; nothing to compare")
+
+    log.append("")
+    log.append("=== how far the count moves when only the seed changes ===")
+    for label, col in (("best pose alone", "single_spread"),
+                       (f"mean of top {a.top_n}", "pooled_spread")):
+        v = ok[col].dropna()
+        changed = int((v > 0).sum())
+        log.append(f"  {label:18s} spread across seeds: median {v.median():.2f}"
+                   f", mean {v.mean():.2f}, max {v.max():.2f}")
+        log.append(f"  {'':18s} {changed} of {len(v)} "
+                   f"({100*changed/len(v):.0f}%) change at all")
+    s1 = ok["single_spread"].dropna()
+    s2 = ok["pooled_spread"].dropna()
+    log.append("")
+    if s2.median() < s1.median():
+        log.append(f"  -> pooling the top {a.top_n} narrows the median spread "
+                   f"from {s1.median():.2f} to {s2.median():.2f} bonds")
+    elif s2.median() > s1.median():
+        log.append(f"  -> pooling the top {a.top_n} WIDENS the median spread, "
+                   f"{s1.median():.2f} to {s2.median():.2f}. The poses within "
+                   f"a seed disagree more than the seeds do, so the pool is "
+                   f"averaging over binding modes, not over noise")
+    else:
+        log.append(f"  -> pooling the top {a.top_n} leaves the median spread "
+                   f"unchanged at {s1.median():.2f} bonds")
+    log.append(f"  a difference between two compounds smaller than "
+               f"{s2.median():.2f} bonds cannot be told from seed noise by "
+               f"this measurement")
+
+    # the same question asked of the score being ranked on, since a pose set
+    # can be stable in count while the score it was chosen by is not
+    sc = d.sort_values("pose_rank").groupby(
+        ["compound", "receptor", "seed"])[a.select_by].first().reset_index()
+    ssp = sc.groupby(["compound", "receptor"])[a.select_by].agg(spread).dropna()
+    if len(ssp):
+        log.append("")
+        log.append(f"=== the same for {a.select_by} of the best pose ===")
+        log.append(f"  spread across seeds: median {ssp.median():.4f}, "
+                   f"max {ssp.max():.4f}")
+
+    log.append("")
+    log.append("=== per compound ===")
+    hdr = (f"  {'compound':12s}{'receptor':16s}{'seeds':>6s}"
+           f"{'single':>8s}{'spread':>8s}{'pooled':>8s}{'spread':>8s}")
+    log.append(hdr)
+    for _, r in ok.sort_values(["compound", "receptor"]).iterrows():
+        log.append(f"  {r['compound']:12s}{r['receptor']:16s}"
+                   f"{int(r['seeds']):6d}"
+                   f"{r['single_med']:8.1f}{r['single_spread']:8.1f}"
+                   f"{r['pooled_mean']:8.2f}{r['pooled_spread']:8.2f}")
+
+    text = "\n".join(log)
+    print(text)
+    with open(a.out + "_values.txt", "w") as fh:
+        fh.write(text + "\n")
+    print(f"\n[out] {a.out}_poses.csv")
+    print(f"      {a.out}_per_compound.csv")
+    print(f"      {a.out}_values.txt")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

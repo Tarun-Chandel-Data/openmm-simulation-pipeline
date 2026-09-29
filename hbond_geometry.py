@@ -116,13 +116,35 @@ def ligand_sites(mol):
 
 
 def bonds_for_pose(mol, sites, a):
-    """Residues hydrogen bonded to this pose, and how many bonds were made."""
+    """Residues hydrogen bonded to this pose, and how many bonds were made.
+
+    A bond is one ligand atom paired with one receptor atom, counted once. A
+    hydroxyl is both donor and acceptor, so the same pair satisfies the
+    ligand-donates test and the receptor-donates test; counting both would
+    report two bonds where the geometry holds one. Which role it was found in
+    is kept in the detail rather than in the count."""
     don, acc = ligand_sites(mol)
-    hits, detail = {}, []
+    hits, detail, seen = {}, [], set()
+
+    def record(label, name, lig_idx, role_seen, d):
+        key = (label, name, lig_idx)
+        if key in seen:
+            # already counted from the other direction; note the second role
+            for k, row in enumerate(detail):
+                if row[0] == label and row[1] == name and row[4] == lig_idx:
+                    detail[k] = (row[0], row[1], row[2] + "+" + role_seen,
+                                 row[3], row[4])
+                    break
+            return False
+        seen.add(key)
+        hits[label] = hits.get(label, 0) + 1
+        detail.append((label, name, role_seen, d, lig_idx))
+        return True
+
     for label, name, sxyz, saxyz, role in sites:
         # receptor acceptor  <-  ligand donor
         if role in ("A", "B"):
-            for _, dxyz, hxyzs, dante in don:
+            for di, dxyz, hxyzs, dante in don:
                 if np.linalg.norm(dxyz - sxyz) > a.dist:
                     continue
                 ok = False
@@ -132,13 +154,12 @@ def bonds_for_pose(mol, sites, a):
                         ok = True
                         break
                 if ok and angle(saxyz, sxyz, dxyz) >= a.antecedent_angle:
-                    hits[label] = hits.get(label, 0) + 1
-                    detail.append((label, name, "lig-donor",
-                                   float(np.linalg.norm(dxyz - sxyz))))
-                    break
+                    if record(label, name, di, "lig-donor",
+                              float(np.linalg.norm(dxyz - sxyz))):
+                        break
         # receptor donor  ->  ligand acceptor
         if role in ("D", "B"):
-            for _, axyz, aante in acc:
+            for ai, axyz, aante in acc:
                 d = float(np.linalg.norm(axyz - sxyz))
                 if d > a.dist:
                     continue
@@ -147,9 +168,8 @@ def bonds_for_pose(mol, sites, a):
                 if aante is not None and \
                         angle(aante, axyz, sxyz) < a.antecedent_angle:
                     continue
-                hits[label] = hits.get(label, 0) + 1
-                detail.append((label, name, "rec-donor", d))
-                break
+                if record(label, name, ai, "rec-donor", d):
+                    break
     return hits, detail
 
 
