@@ -168,53 +168,79 @@ def main():
     if key:
         r = r.sort_values(key, ascending=False)
 
-    for lab in labs:
-        n = int(r[f"{lab}_n_conformer"].median())
-        log.append("")
-        log.append(f"=== {lab}: conformers of {n} in which the residue is "
-                   f"bonded ===")
-        log.append(f"    residues: {', '.join(shown(lab))}")
-        cols = want[lab]
-        hdr = f"  {'compound':10s}"
-        for c, s in zip(cols, shown(lab)):
-            hdr += f"{s:>10s}"
-        hdr += f"{'either':>9s}{'both':>7s}{'either %':>10s}"
-        log.append(hdr)
-        rr = r.sort_values(f"{lab}_either", ascending=False)
-        for _, x in (rr if a.all else rr.head(a.top)).iterrows():
-            line = f"  {x['compound']:10s}"
-            for c in cols:
-                line += f"{int(x[f'{lab}_{c}']):10d}"
-            line += (f"{int(x[f'{lab}_either']):9d}"
-                     f"{int(x[f'{lab}_both']):7d}"
-                     f"{100*x[f'{lab}_either']/x[f'{lab}_n_conformer']:9.0f}%")
-            log.append(line)
-        if not a.all and len(r) > a.top:
-            log.append(f"    ... {len(r) - a.top} more")
-        v = r[f"{lab}_either"]
-        log.append(f"    across all {len(r)} compounds: median "
-                   f"{v.median():.0f} of {n} conformers, "
-                   f"{int((v == 0).sum())} never, "
-                   f"{int((v == n).sum())} in every one")
-
     if len(labs) == 2:
         l1, l2 = labs
         r["diff_either"] = r[f"{l2}_either"] - r[f"{l1}_either"]
+        r["diff_both"] = r[f"{l2}_both"] - r[f"{l1}_both"]
+        r = r.sort_values(["diff_either", f"{l2}_either"], ascending=False)
+        n1 = int(r[f"{l1}_n_conformer"].median())
+        n2 = int(r[f"{l2}_n_conformer"].median())
         log.append("")
-        log.append(f"=== difference, {l2} minus {l1}, in conformers engaged "
-                   f"===")
-        rr = r.sort_values("diff_either", ascending=False)
-        log.append(f"  {'compound':10s}{l1:>8s}{l2:>8s}{'diff':>8s}")
-        for _, x in (rr if a.all else rr.head(a.top)).iterrows():
-            log.append(f"  {x['compound']:10s}"
-                       f"{int(x[f'{l1}_either']):8d}"
-                       f"{int(x[f'{l2}_either']):8d}"
-                       f"{int(x['diff_either']):+8d}")
+        log.append(f"=== conformers in which the hinge is bonded "
+                   f"({l1} of {n1}, {l2} of {n2}) ===")
+        log.append(f"    {l1}: {', '.join(shown(l1))}   "
+                   f"{l2}: {', '.join(shown(l2))}")
+        log.append(f"    either = at least one of the pair; both = the pair "
+                   f"bridged; ranked on the difference in either")
+        hdr = f"  {'compound':9s}"
+        for lab in (l1, l2):
+            for nm in shown(lab):
+                hdr += f"{nm:>9s}"
+            hdr += f"{'either':>8s}{'both':>6s}"
+        hdr += f"{'diff':>7s}"
+        log.append(hdr)
+        for _, x in (r if a.all else r.head(a.top)).iterrows():
+            line = f"  {x['compound']:9s}"
+            for lab in (l1, l2):
+                for c in want[lab]:
+                    line += f"{int(x[f'{lab}_{c}']):9d}"
+                line += (f"{int(x[f'{lab}_either']):8d}"
+                         f"{int(x[f'{lab}_both']):6d}")
+            line += f"{int(x['diff_either']):+7d}"
+            log.append(line)
+        if not a.all and len(r) > a.top:
+            log.append(f"    ... {len(r) - a.top} more")
         dv = r["diff_either"]
-        log.append(f"  median {dv.median():+.0f}, "
+        log.append("")
+        for lab, n in ((l1, n1), (l2, n2)):
+            v = r[f"{lab}_either"]
+            log.append(f"    {lab}: median {v.median():.0f} of {n} "
+                       f"conformers, {int((v == 0).sum())} never, "
+                       f"{int((v == n).sum())} in every one")
+            for c, nm in zip(want[lab], shown(lab)):
+                vv = r[f"{lab}_{c}"]
+                log.append(f"      {nm}: median {vv.median():.0f}, "
+                           f"max {vv.max():.0f}")
+        log.append(f"    difference: median {dv.median():+.0f}, "
                    f"{int((dv > 0).sum())} favour {l2}, "
                    f"{int((dv < 0).sum())} favour {l1}, "
                    f"{int((dv == 0).sum())} equal")
+    else:
+        for lab in labs:
+            n = int(r[f"{lab}_n_conformer"].median())
+            r = r.sort_values(f"{lab}_either", ascending=False)
+            log.append("")
+            log.append(f"=== {lab}: conformers of {n} in which the residue "
+                       f"is bonded ===")
+            hdr = f"  {'compound':10s}"
+            for nm in shown(lab):
+                hdr += f"{nm:>10s}"
+            hdr += f"{'either':>9s}{'both':>7s}{'either %':>10s}"
+            log.append(hdr)
+            for _, x in (r if a.all else r.head(a.top)).iterrows():
+                line = f"  {x['compound']:10s}"
+                for c in want[lab]:
+                    line += f"{int(x[f'{lab}_{c}']):10d}"
+                line += (f"{int(x[f'{lab}_either']):9d}"
+                         f"{int(x[f'{lab}_both']):7d}"
+                         f"{100*x[f'{lab}_either']/x[f'{lab}_n_conformer']:9.0f}%")
+                log.append(line)
+            if not a.all and len(r) > a.top:
+                log.append(f"    ... {len(r) - a.top} more")
+            v = r[f"{lab}_either"]
+            log.append(f"    median {v.median():.0f} of {n}, "
+                       f"{int((v == 0).sum())} never, "
+                       f"{int((v == n).sum())} in every one")
 
     text = "\n".join(log)
     print(text)
