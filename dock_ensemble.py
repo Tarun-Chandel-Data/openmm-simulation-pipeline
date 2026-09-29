@@ -22,7 +22,7 @@ the convention the earlier ensemble run used.
 import argparse, csv, json, os, shlex, subprocess, sys, time
 from glob import glob
 
-LIG_EXT = (".sdf", ".mol2", ".pdbqt", ".smi")
+LIG_EXT = (".sdf", ".mol", ".mol2", ".pdbqt", ".smi")
 REC_EXT = (".pdb", ".pdbqt")
 
 
@@ -35,7 +35,8 @@ def listing(d, exts):
 
 def stem(p):
     b = os.path.basename(p)
-    for e in LIG_EXT + REC_EXT:
+    # longest extension first: stripping ".mol" from "X.mol2" would leave "2"
+    for e in sorted(LIG_EXT + REC_EXT, key=len, reverse=True):
         if b.endswith(e):
             b = b[: -len(e)]
             break
@@ -72,7 +73,7 @@ def main():
                         "one shared --autobox-ligand would put the box in the "
                         "wrong place; residues travel with the receptor and do "
                         "not")
-    p.add_argument("--size", nargs=3, type=float, default=[22.0, 22.0, 22.0],
+    p.add_argument("--size", nargs=3, type=float, default=[22.0, 22.0, 26.0],
                    metavar=("X", "Y", "Z"))
     p.add_argument("--exhaustiveness", type=int, default=16)
     p.add_argument("--num-modes", type=int, default=100)
@@ -84,6 +85,13 @@ def main():
                    help="gnina --cnn_scoring. 'rescore' scores the Vina poses "
                         "with the CNN; 'all' also refines with it and is far "
                         "slower")
+    p.add_argument("--cnn-model", default="crossdock_default2018_1_3_ensemble",
+                   help="gnina --cnn. The scoring model is part of what makes "
+                        "two runs comparable, so it is recorded rather than "
+                        "left to gnina's default")
+    p.add_argument("--cpu", type=int,
+                   help="passed to gnina --cpu. With --jobs > 1 the product is "
+                        "what the machine has to supply")
     p.add_argument("--gnina", default="gnina")
     p.add_argument("--jobs", type=int, default=1)
     p.add_argument("--out", required=True)
@@ -201,7 +209,10 @@ def main():
                        "--exhaustiveness", str(a.exhaustiveness),
                        "--num_modes", str(a.num_modes),
                        "--seed", str(a.seed),
-                       "--cnn_scoring", a.cnn] + box_for(rec, lab)
+                       "--cnn_scoring", a.cnn,
+                       "--cnn", a.cnn_model]
+                cmd += (["--cpu", str(a.cpu)] if a.cpu else [])
+                cmd += box_for(rec, lab)
                 jobs.append((name, out, log, cmd))
 
     n_lig, n_rec = len(ligs), sum(len(v) for v in ens.values())
@@ -210,7 +221,9 @@ def main():
         print(f"       {lab}: {len(recs)} conformers from "
               f"{os.path.dirname(recs[0])}")
     print(f"       exhaustiveness {a.exhaustiveness}, num_modes "
-          f"{a.num_modes}, seed {a.seed}, cnn_scoring {a.cnn}")
+          f"{a.num_modes}, seed {a.seed}, cnn_scoring {a.cnn}, "
+          f"cnn {a.cnn_model}"
+          + (f", cpu {a.cpu} x {a.jobs} jobs" if a.cpu else ""))
     if a.pocket_residues:
         print(f"       box: {a.size[0]:g} x {a.size[1]:g} x {a.size[2]:g} A, "
               f"centred per receptor on its pocket residues")
@@ -241,7 +254,8 @@ def main():
                                  for k, v in ens.items()},
                    "exhaustiveness": a.exhaustiveness,
                    "num_modes": a.num_modes, "seed": a.seed,
-                   "cnn_scoring": a.cnn,
+                   "cnn_scoring": a.cnn, "cnn_model": a.cnn_model,
+                   "cpu": a.cpu,
                    "box_mode": ("pocket-residues" if a.pocket_residues else
                                 "autobox-ligand" if a.autobox_ligand
                                 else "center"),
