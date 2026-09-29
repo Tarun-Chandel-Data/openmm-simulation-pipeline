@@ -23,7 +23,7 @@ every pose, so the count describes a single binding mode.
     python hbond_geometry.py --receptor a2.pdb --poses dock_paired/poses \
         --tag a2 --out hb_a2.csv
 """
-import argparse, glob, os, sys
+import argparse, glob, os, re, sys
 import numpy as np
 
 try:
@@ -153,11 +153,36 @@ def bonds_for_pose(mol, sites, a):
     return hits, detail
 
 
+def compound_id(mol, path):
+    """The compound this file belongs to.
+
+    Takes the molecule title when there is one. Otherwise the file name, with
+    a trailing _docked, _out or _poses removed, since those name the step
+    rather than the compound; and where that leaves nothing distinctive, the
+    directory holding the file, which is how ensemble runs identify it."""
+    if mol is not None and mol.HasProp("_Name") and mol.GetProp("_Name").strip():
+        return mol.GetProp("_Name").strip()
+    base = os.path.basename(path)
+    for ext in (".sdf.gz", ".sdf"):
+        if base.endswith(ext):
+            base = base[: -len(ext)]
+            break
+    base = base.split("__")[0]
+    base = re.sub(r"_(docked|out|poses|result|min|best)$", "", base,
+                  flags=re.I)
+    if base:
+        return base
+    return os.path.basename(os.path.dirname(path))
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--receptor", required=True)
     p.add_argument("--poses", required=True,
-                   help="an sdf file, or a directory of them")
+                   help="an sdf file, a directory of them, or a glob pattern. "
+                        "A pattern lets the poses sit in nested directories, "
+                        "as ensemble runs usually write them: one directory "
+                        "per receptor conformer, one per compound inside it")
     p.add_argument("--select-by", default="CNNaffinity",
                    help="pose property to maximise when choosing the one pose "
                         "per compound")
@@ -193,8 +218,13 @@ def main():
     print(f"[in] {len(sites)} polar receptor atoms with antecedents "
           f"from {a.receptor}")
 
-    files = ([a.poses] if a.poses.endswith(".sdf")
-             else sorted(glob.glob(os.path.join(a.poses, "*.sdf"))))
+    if any(ch in a.poses for ch in "*?["):
+        files = sorted(glob.glob(os.path.expanduser(a.poses), recursive=True))
+    elif a.poses.endswith(".sdf"):
+        files = [a.poses]
+    else:
+        files = sorted(glob.glob(os.path.join(os.path.expanduser(a.poses),
+                                              "*.sdf")))
     n_all = len(files)
     if a.match:
         files = [f for f in files if a.match in os.path.basename(f)]
@@ -229,9 +259,7 @@ def main():
         except Exception:
             mh = best
         hits, detail = bonds_for_pose(mh, sites, a)
-        cid = (best.GetProp("_Name").strip() if best.HasProp("_Name")
-               and best.GetProp("_Name").strip()
-               else os.path.basename(f).split("__")[0])
+        cid = compound_id(best, f)
         rec = {
             "cpd_id": cid,
             f"{a.tag}_n_hbond": int(sum(hits.values())),
