@@ -100,6 +100,11 @@ def unpaired(a, d, r1, r2):
                 row[f"{c}_{key}_mean"] = float(np.mean(v))
                 row[f"{c}_{key}_sd"] = (float(np.std(v, ddof=1))
                                         if len(v) > 1 else np.nan)
+                # the extremes across replicates, so how far the best and the
+                # worst conformer sit from the mean is visible rather than
+                # summarised into one number
+                row[f"{c}_{key}_min"] = float(np.min(v))
+                row[f"{c}_{key}_max"] = float(np.max(v))
                 row[f"{c}_{key}_n"] = len(v)
             if not keep:
                 continue
@@ -124,17 +129,30 @@ def unpaired(a, d, r1, r2):
     r = pd.DataFrame(rows).sort_values(f"{a.col}_delta", ascending=False)
 
     log.append("")
+    inv = lower_is_better(a.col)
     log.append(f"=== {a.col}: {a.label2} minus {a.label1}, unpaired ===")
-    log.append(f"  {'compound':10s}{a.label1:>9s}{'sd':>7s}"
-               f"{a.label2:>9s}{'sd':>7s}{'delta':>8s}{'se':>7s}{'z':>7s}")
+    if inv:
+        log.append(f"  {a.col} is an energy, so the printed delta is "
+                   f"{a.label1} minus {a.label2}: a positive number still "
+                   f"means {a.label2} is favoured. The two mean columns are "
+                   f"the raw values, not negated")
+    w = max(9, len(a.label1) + 1, len(a.label2) + 1)
+    log.append(f"  {'compound':10s}"
+               f"{a.label1:>{w}s}{'sd':>7s}{'min':>8s}{'max':>8s}"
+               f"{a.label2:>{w}s}{'sd':>7s}{'min':>8s}{'max':>8s}"
+               f"{'delta':>8s}{'se':>7s}{'z':>7s}")
     for _, x in r.iterrows():
-        log.append(f"  {x['compound']:10s}"
-                   f"{x[f'{a.col}_a1_mean']:9.2f}{x[f'{a.col}_a1_sd']:7.2f}"
-                   f"{x[f'{a.col}_a2_mean']:9.2f}{x[f'{a.col}_a2_sd']:7.2f}"
-                   f"{x[f'{a.col}_delta']:+8.2f}"
-                   f"{x.get(f'{a.col}_se', np.nan):7.2f}"
-                   + (f"{x[f'{a.col}_z']:+7.2f}"
-                      if not pd.isna(x.get(f"{a.col}_z", np.nan)) else "      -"))
+        line = f"  {x['compound']:10s}"
+        for key in ("a1", "a2"):
+            line += (f"{x[f'{a.col}_{key}_mean']:{w}.3f}"
+                     f"{x[f'{a.col}_{key}_sd']:7.3f}"
+                     f"{x[f'{a.col}_{key}_min']:8.3f}"
+                     f"{x[f'{a.col}_{key}_max']:8.3f}")
+        line += (f"{x[f'{a.col}_delta']:+8.3f}"
+                 f"{x.get(f'{a.col}_se', np.nan):7.3f}"
+                 + (f"{x[f'{a.col}_z']:+7.2f}"
+                    if not pd.isna(x.get(f"{a.col}_z", np.nan)) else "      -"))
+        log.append(line)
     zc = r[f"{a.col}_z"].dropna() if f"{a.col}_z" in r.columns else pd.Series([])
     nose = len(r) - len(zc)
     if nose:
