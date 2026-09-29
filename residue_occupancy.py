@@ -48,6 +48,14 @@ def main():
                         "pose makes the bond; any counts it when any kept "
                         "pose does. best is the stricter claim and matches a "
                         "single-pose analysis")
+    p.add_argument("--rank-by",
+                   help="receptor label whose 'either' count orders the "
+                        "table. Defaults to the last --receptor given. The "
+                        "other receptor's counts are carried beside it, not "
+                        "ranked on")
+    p.add_argument("--show-diff", action="store_true",
+                   help="also print the difference between the two 'either' "
+                        "counts")
     p.add_argument("--top", type=int, default=25)
     p.add_argument("--all", action="store_true")
     p.add_argument("--out")
@@ -172,37 +180,49 @@ def main():
         l1, l2 = labs
         r["diff_either"] = r[f"{l2}_either"] - r[f"{l1}_either"]
         r["diff_both"] = r[f"{l2}_both"] - r[f"{l1}_both"]
-        r = r.sort_values(["diff_either", f"{l2}_either"], ascending=False)
+        rank_lab = a.rank_by or l2
+        if rank_lab not in labs:
+            sys.exit(f"--rank-by {rank_lab!r} is not one of: "
+                     f"{', '.join(labs)}")
+        other = l1 if rank_lab == l2 else l2
+        r = r.sort_values([f"{rank_lab}_either", f"{rank_lab}_both"],
+                          ascending=False)
         n1 = int(r[f"{l1}_n_conformer"].median())
         n2 = int(r[f"{l2}_n_conformer"].median())
         log.append("")
         log.append(f"=== conformers in which the hinge is bonded "
                    f"({l1} of {n1}, {l2} of {n2}) ===")
-        log.append(f"    {l1}: {', '.join(shown(l1))}   "
-                   f"{l2}: {', '.join(shown(l2))}")
+        log.append(f"    {rank_lab}: {', '.join(shown(rank_lab))}   "
+                   f"{other}: {', '.join(shown(other))}")
         log.append(f"    either = at least one of the pair; both = the pair "
-                   f"bridged; ranked on the difference in either")
+                   f"bridged")
+        log.append(f"    ranked on {rank_lab} either; {other} is carried "
+                   f"beside it and is not ranked on")
+        order = (rank_lab, other)
         hdr = f"  {'compound':9s}"
-        for lab in (l1, l2):
+        for lab in order:
             for nm in shown(lab):
                 hdr += f"{nm:>9s}"
             hdr += f"{'either':>8s}{'both':>6s}"
-        hdr += f"{'diff':>7s}"
+        if a.show_diff:
+            hdr += f"{'diff':>7s}"
         log.append(hdr)
         for _, x in (r if a.all else r.head(a.top)).iterrows():
             line = f"  {x['compound']:9s}"
-            for lab in (l1, l2):
+            for lab in order:
                 for c in want[lab]:
                     line += f"{int(x[f'{lab}_{c}']):9d}"
                 line += (f"{int(x[f'{lab}_either']):8d}"
                          f"{int(x[f'{lab}_both']):6d}")
-            line += f"{int(x['diff_either']):+7d}"
+            if a.show_diff:
+                line += f"{int(x['diff_either']):+7d}"
             log.append(line)
         if not a.all and len(r) > a.top:
             log.append(f"    ... {len(r) - a.top} more")
         dv = r["diff_either"]
         log.append("")
-        for lab, n in ((l1, n1), (l2, n2)):
+        for lab, n in ((rank_lab, n1 if rank_lab == l1 else n2),
+                       (other, n1 if other == l1 else n2)):
             v = r[f"{lab}_either"]
             log.append(f"    {lab}: median {v.median():.0f} of {n} "
                        f"conformers, {int((v == 0).sum())} never, "
@@ -211,10 +231,11 @@ def main():
                 vv = r[f"{lab}_{c}"]
                 log.append(f"      {nm}: median {vv.median():.0f}, "
                            f"max {vv.max():.0f}")
-        log.append(f"    difference: median {dv.median():+.0f}, "
-                   f"{int((dv > 0).sum())} favour {l2}, "
-                   f"{int((dv < 0).sum())} favour {l1}, "
-                   f"{int((dv == 0).sum())} equal")
+        if a.show_diff:
+            log.append(f"    difference: median {dv.median():+.0f}, "
+                       f"{int((dv > 0).sum())} favour {l2}, "
+                       f"{int((dv < 0).sum())} favour {l1}, "
+                       f"{int((dv == 0).sum())} equal")
     else:
         for lab in labs:
             n = int(r[f"{lab}_n_conformer"].median())
