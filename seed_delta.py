@@ -39,11 +39,44 @@ def main():
     p.add_argument("--a2", required=True, help="receptor label subtracted from")
     p.add_argument("--label1", default="CK2α")
     p.add_argument("--label2", default="CK2α′")
-    p.add_argument("--col", default="n_hbond")
+    p.add_argument("--col", default="n_hbond",
+                   help="the criterion the ranking is on")
+    p.add_argument("--also", default="CNNscore,CNNaffinity,minimizedAffinity",
+                   help="further criteria reported beside the ranked one. Each "
+                        "gets its own paired difference and its own sign "
+                        "check, so a criterion that disagrees with the others "
+                        "is visible rather than averaged away")
+    p.add_argument("--lower-better", default="minimizedaffinity,vina,energy",
+                   help="substrings marking a criterion where the smaller "
+                        "value is the better one. Its difference is negated "
+                        "so that, for every criterion printed, a positive "
+                        "number means the second receptor is favoured")
+    p.add_argument("--higher-better", default="cnn",
+                   help="substrings marking a criterion where the larger value "
+                        "is better, checked first. gnina reports CNNaffinity "
+                        "as a pKd, where larger is better, and "
+                        "minimizedAffinity as an energy, where smaller is; "
+                        "a plain match on 'affinity' would negate both")
     p.add_argument("--out")
     a = p.parse_args()
 
     d = pd.read_csv(a.poses)
+    also = [x.strip() for x in a.also.split(",") if x.strip()]
+    lowmarks = [x.strip().lower() for x in a.lower_better.split(",")
+                if x.strip()]
+    highmarks = [x.strip().lower() for x in a.higher_better.split(",")
+                 if x.strip()]
+
+    def lower_is_better(c):
+        cl = c.lower()
+        # the higher-is-better marks win, so CNNaffinity is not caught by a
+        # mark meant for an energy term
+        if any(mk in cl for mk in highmarks):
+            return False
+        return any(mk in cl for mk in lowmarks)
+
+    missing_also = [c for c in also if c not in d.columns]
+    also = [c for c in also if c in d.columns and c != a.col]
     for need in ("compound", "receptor", "seed", a.col):
         if need not in d.columns:
             sys.exit(f"missing column '{need}'; have: "
@@ -68,6 +101,22 @@ def main():
            f"{per_seed['seed'].nunique()} seeds",
            f"     delta = {a.col}({a.label2}) - {a.col}({a.label1}), "
            f"formed within each seed so the shared part of the noise cancels"]
+
+    extra = {}
+    for c in also:
+        mm = (d.groupby(["compound", "receptor", "seed"])[c]
+               .mean().unstack("receptor"))
+        if a.a1 not in mm.columns or a.a2 not in mm.columns:
+            continue
+        mm = mm.dropna(subset=[a.a1, a.a2])
+        dv = mm[a.a2] - mm[a.a1]
+        if lower_is_better(c):
+            # negated so that, printed, a positive number always means the
+            # second receptor is favoured. Without this a reader has to carry
+            # a different sign rule per column
+            dv = -dv
+        extra[c] = pd.DataFrame({a.a1: mm[a.a1], a.a2: mm[a.a2],
+                                 "delta": dv}).reset_index()
 
     rows = []
     for cpd, g in per_seed.groupby("compound"):
@@ -94,6 +143,17 @@ def main():
                "delta_min": float(dv.min()), "delta_max": float(dv.max()),
                "delta_sd": sd, "n_pos": pos, "n_neg": neg, "n_tie": ties,
                "sign_consistent": consistent, "reverses": reverses}
+        for c, ed in extra.items():
+            eg = ed[ed["compound"] == cpd]
+            if not len(eg):
+                continue
+            ev = eg["delta"].to_numpy(float)
+            row[f"{c}_{a.a1}"] = float(eg[a.a1].mean())
+            row[f"{c}_{a.a2}"] = float(eg[a.a2].mean())
+            row[f"{c}_delta"] = float(np.median(ev))
+            row[f"{c}_sd"] = float(ev.std(ddof=1)) if len(ev) > 1 else np.nan
+            row[f"{c}_pos"] = int((ev > 0).sum())
+            row[f"{c}_n"] = len(ev)
         if HAVE_SCIPY and n >= 5 and not np.allclose(dv, 0):
             try:
                 row["wilcoxon_p"] = float(wilcoxon(dv).pvalue)
@@ -189,6 +249,56 @@ def main():
                    + (", ".join(strong["compound"]) if len(strong) else "none"))
         log.append(f"  {len(mid)} clear the noise but not twice it: "
                    + (", ".join(mid["compound"]) if len(mid) else "none"))
+
+    if extra:
+        log.append("")
+        log.append("=== the other criteria, same paired difference ===")
+        log.append("  for every column a POSITIVE number favours "
+                   f"{a.label2}; criteria where the smaller value is better "
+                   "are negated to make that true")
+        log.append("  convention applied: "
+                   + ", ".join(f"{c} ({'lower' if lower_is_better(c) else 'higher'}"
+                               f" is better)" for c in extra))
+        hdr = f"  {'compound':10s}{'Dhbond':>9s}"
+        for c in extra:
+            hdr += f"{c[:11]:>13s}"
+        hdr += "   agree"
+        log.append(hdr)
+        crit = ["delta_median"] + [f"{c}_delta" for c in extra]
+        for _, x in r.iterrows():
+            line = f"  {x['compound']:10s}{x['delta_median']:+9.2f}"
+            signs = [np.sign(x[c]) for c in crit if not pd.isna(x.get(c))]
+            for c in extra:
+                v = x.get(f"{c}_delta")
+                line += "          n/a" if pd.isna(v) else f"{v:+13.3f}"
+            npos = sum(1 for sg in signs if sg > 0)
+            nneg = sum(1 for sg in signs if sg < 0)
+            if npos == len(signs):
+                tag = f"all {len(signs)} -> {a.label2}"
+            elif nneg == len(signs):
+                tag = f"all {len(signs)} -> {a.label1}"
+            else:
+                tag = f"split {npos}/{nneg}"
+            log.append(line + f"   {tag}")
+        log.append("")
+        agree_all = []
+        for _, x in r.iterrows():
+            sg = [np.sign(x[c]) for c in crit if not pd.isna(x.get(c))]
+            if sg and all(s > 0 for s in sg):
+                agree_all.append(x["compound"])
+        log.append(f"  {len(agree_all)} of {len(r)} have every criterion "
+                   f"pointing at {a.label2}: "
+                   + (", ".join(agree_all) if agree_all else "none"))
+        both = [c for c in agree_all
+                if bool(r.loc[r["compound"] == c, "sign_consistent"].iloc[0])]
+        log.append(f"  of those, {len(both)} also keep the hydrogen bond sign "
+                   f"in every seed: " + (", ".join(both) if both else "none"))
+
+    if missing_also:
+        log.append("")
+        log.append(f"  [note] requested but not in the table: "
+                   f"{', '.join(missing_also)}. Re-run "
+                   f"seed_topn_stability.py with --props naming them")
 
     text = "\n".join(log)
     print(text)

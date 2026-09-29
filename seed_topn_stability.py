@@ -88,6 +88,12 @@ def main():
     p.add_argument("--lower-is-better", action="store_true",
                    help="set when --select-by is an energy, where the smallest "
                         "value is the best pose")
+    p.add_argument("--props",
+                   default="CNNscore,CNNaffinity,minimizedAffinity",
+                   help="pose properties carried through to the table besides "
+                        "the one ranked on, so a later step can report them "
+                        "without re-reading the poses. Missing ones are "
+                        "named and left empty rather than failing")
     p.add_argument("--match",
                    help="keep only compounds whose id contains this")
     p.add_argument("--dist", type=float, default=3.5)
@@ -124,7 +130,9 @@ def main():
            f"     geometry: D-A <= {a.dist} A, H...A <= {a.h_dist} A, "
            f"D-H...A >= {a.angle} deg, antecedent >= {a.antecedent_angle} deg"]
 
+    want_props = [x.strip() for x in a.props.split(",") if x.strip()]
     rows = []
+    absent = set()
     skipped_rec, skipped_name, thin = defaultdict(int), 0, []
     for f in files:
         got = parse_name(f)
@@ -145,6 +153,9 @@ def main():
             if v is None:
                 continue
             poses.append((v, mol))
+        for w in want_props:
+            if poses and not poses[0][1].HasProp(w):
+                absent.add(w)
         if not poses:
             continue
         poses.sort(key=lambda t: t[0], reverse=not a.lower_is_better)
@@ -159,11 +170,15 @@ def main():
             except Exception:
                 mh = mol
             hits, _ = bonds_for_pose(mh, sites[rec], a)
-            rows.append({"compound": cpd, "receptor": rec, "seed": seed,
-                         "pose_rank": k, a.select_by: v,
-                         "n_hbond": int(sum(hits.values())),
-                         "n_residue": len(hits),
-                         "residues": ";".join(sorted(hits))})
+            row = {"compound": cpd, "receptor": rec, "seed": seed,
+                   "pose_rank": k, a.select_by: v,
+                   "n_hbond": int(sum(hits.values())),
+                   "n_residue": len(hits),
+                   "residues": ";".join(sorted(hits))}
+            for w in want_props:
+                if w != a.select_by:
+                    row[w] = prop(mol, w)
+            rows.append(row)
 
     if not rows:
         sys.exit("no poses selected; check --select-by names a property the "
@@ -182,6 +197,12 @@ def main():
         log.append(f"     [note] {len(thin)} files hold fewer than {a.top_n} "
                    f"scored poses, e.g. " +
                    ", ".join(f"{n} ({k})" for n, k in thin[:3]))
+    if absent:
+        log.append(f"     [note] these properties are not on the poses and "
+                   f"are empty in the table: {', '.join(sorted(absent))}")
+    carried = [w for w in want_props if w not in absent]
+    if carried:
+        log.append(f"     carried through: {', '.join(carried)}")
 
     seeds = sorted(d["seed"].unique())
     log.append(f"     {d['compound'].nunique()} compounds, "
