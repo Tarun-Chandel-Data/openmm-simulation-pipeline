@@ -49,8 +49,16 @@ except ImportError:
     sys.exit("needs hbond_geometry.py beside this script")
 
 
-def parse_name(path):
-    """compound, receptor, seed from COMPOUND__RECEPTOR__SEED.sdf."""
+def parse_name(path, order):
+    """The three name fields, returned as (compound, receptor, replicate).
+
+    A run that varies the seed writes COMPOUND__RECEPTOR__SEED, where the
+    middle field names the receptor and the last the replicate. An ensemble
+    run writes COMPOUND__CONFORMER__SUBUNIT, where the middle field is the
+    replicate and the last names which ensemble it belongs to. Both are three
+    fields in the same shape, so which is which has to be stated rather than
+    guessed: a wrong guess groups every conformer as its own receptor and
+    every subunit as a replicate of it."""
     b = os.path.basename(path)
     for e in (".sdf.gz", ".sdf"):
         if b.endswith(e):
@@ -59,7 +67,9 @@ def parse_name(path):
     parts = b.split("__")
     if len(parts) < 3:
         return None
-    return parts[0], parts[1], "__".join(parts[2:])
+    parts = parts[:2] + ["__".join(parts[2:])]
+    got = dict(zip(order, parts))
+    return got["compound"], got["receptor"], got["replicate"]
 
 
 def prop(mol, name):
@@ -73,10 +83,23 @@ def prop(mol, name):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--receptor", action="append", required=True,
+    p.add_argument("--receptor", action="append",
                    metavar="LABEL=PATH",
-                   help="the receptor each file's middle field names. Repeat "
-                        "for each one")
+                   help="a single receptor structure per label, where every "
+                        "replicate was docked into the same one. Repeat for "
+                        "each label")
+    p.add_argument("--ensemble", action="append",
+                   metavar="LABEL=DIR",
+                   help="use instead of --receptor when each replicate has "
+                        "its own structure: the directory of conformer pdb "
+                        "files. The replicate field names the file, so its "
+                        "own structure is used to find the polar sites rather "
+                        "than one shared reference")
+    p.add_argument("--fields", default="compound,receptor,replicate",
+                   help="what the three parts of COMPOUND__X__Y mean, in "
+                        "order. A seed run is compound,receptor,replicate; an "
+                        "ensemble run writing COMPOUND__CONFORMER__SUBUNIT is "
+                        "compound,replicate,receptor")
     p.add_argument("--poses", required=True,
                    help="sdf files, a directory of them, or a glob")
     p.add_argument("--top-n", type=int, default=8,
@@ -103,8 +126,16 @@ def main():
     p.add_argument("--out", default="seed_stability")
     a = p.parse_args()
 
-    recs = {}
-    for spec in a.receptor:
+    order = [x.strip() for x in a.fields.split(",") if x.strip()]
+    if sorted(order) != ["compound", "receptor", "replicate"]:
+        sys.exit("--fields must name compound, receptor and replicate exactly "
+                 f"once each; got {a.fields!r}")
+    if bool(a.receptor) == bool(a.ensemble):
+        sys.exit("give either --receptor (one structure per label) or "
+                 "--ensemble (one per replicate), not both and not neither")
+
+    recs, ensdirs = {}, {}
+    for spec in (a.receptor or []):
         if "=" not in spec:
             sys.exit(f"--receptor wants LABEL=PATH, got '{spec}'")
         lab, path = spec.split("=", 1)
@@ -112,6 +143,14 @@ def main():
         if not os.path.exists(path):
             sys.exit(f"receptor not found: {path}")
         recs[lab] = path
+    for spec in (a.ensemble or []):
+        if "=" not in spec:
+            sys.exit(f"--ensemble wants LABEL=DIR, got '{spec}'")
+        lab, d = spec.split("=", 1)
+        d = os.path.expanduser(d)
+        if not os.path.isdir(d):
+            sys.exit(f"ensemble directory not found: {d}")
+        ensdirs[lab] = d
 
     pat = os.path.expanduser(a.poses)
     if os.path.isdir(pat):
@@ -121,10 +160,36 @@ def main():
     if not files:
         sys.exit(f"no pose files matched {a.poses}")
 
+    # the polar sites are read from whichever structure that pose was docked
+    # into. Reading them from one reference instead would place the sites at
+    # the reference's coordinates while the pose sits in the conformer's
     sites = {lab: polar_sites(path) for lab, path in recs.items()}
+    conf_sites = {}
+
+    def sites_for(lab, replicate):
+        if lab in sites:
+            return sites[lab]
+        d = ensdirs.get(lab)
+        if d is None:
+            return None
+        key = (lab, replicate)
+        if key not in conf_sites:
+            hits = [os.path.join(d, replicate + e) for e in (".pdb", ".pdbqt")]
+            hit = next((h for h in hits if os.path.exists(h)), None)
+            if hit is None:
+                conf_sites[key] = None
+            else:
+                conf_sites[key] = polar_sites(hit)
+        return conf_sites[key]
     log = [f"[in] {len(files)} pose files from {a.poses}",
-           f"     receptors: " + ", ".join(f"{k} = {os.path.basename(v)}"
-                                           for k, v in recs.items()),
+           f"     name fields: " + ", ".join(order),
+           ("     receptors: " + ", ".join(f"{k} = {os.path.basename(v)}"
+                                           for k, v in recs.items()))
+           if recs else
+           ("     ensembles: " + ", ".join(
+               f"{k} = {len(glob.glob(os.path.join(v, '*.pdb')))} "
+               f"conformers in {v}"
+               for k, v in ensdirs.items())),
            f"     top {a.top_n} poses per seed, ranked by {a.select_by}"
            + (" (lower is better)" if a.lower_is_better else ""),
            f"     geometry: D-A <= {a.dist} A, H...A <= {a.h_dist} A, "
@@ -135,14 +200,15 @@ def main():
     absent = set()
     skipped_rec, skipped_name, thin = defaultdict(int), 0, []
     for f in files:
-        got = parse_name(f)
+        got = parse_name(f, order)
         if got is None:
             skipped_name += 1
             continue
         cpd, rec, seed = got
         if a.match and a.match not in cpd:
             continue
-        if rec not in sites:
+        rsites = sites_for(rec, seed)
+        if rsites is None:
             skipped_rec[rec] += 1
             continue
         poses = []
@@ -169,7 +235,7 @@ def main():
                 mh = Chem.AddHs(mol, addCoords=True)
             except Exception:
                 mh = mol
-            hits, _ = bonds_for_pose(mh, sites[rec], a)
+            hits, _ = bonds_for_pose(mh, rsites, a)
             row = {"compound": cpd, "receptor": rec, "seed": seed,
                    "pose_rank": k, a.select_by: v,
                    "n_hbond": int(sum(hits.values())),

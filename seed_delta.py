@@ -31,6 +31,159 @@ except ImportError:
     HAVE_SCIPY = False
 
 
+def unpaired(a, d, r1, r2):
+    """Compare two receptors whose replicates are not partners.
+
+    An ensemble taken from one trajectory has no frame-by-frame counterpart in
+    an ensemble taken from another, so the difference cannot be formed replicate
+    by replicate and none of the noise cancels. Each receptor's replicates are
+    summarised on their own and the difference carries the two spreads added,
+    which is wider than a paired difference would be. That is the honest width
+    here, not a shortcoming of the arithmetic.
+    """
+    also = [x.strip() for x in a.also.split(",") if x.strip()]
+    lowmarks = [x.strip().lower() for x in a.lower_better.split(",")
+                if x.strip()]
+    highmarks = [x.strip().lower() for x in a.higher_better.split(",")
+                 if x.strip()]
+
+    def lower_is_better(c):
+        cl = c.lower()
+        if any(mk in cl for mk in highmarks):
+            return False
+        return any(mk in cl for mk in lowmarks)
+
+    cols = [a.col] + [c for c in also if c in d.columns and c != a.col]
+    log = [f"[in] {a.poses}",
+           f"     {d['compound'].nunique()} compounds",
+           f"     {a.label1}: {len(r1)} replicates, "
+           f"{a.label2}: {len(r2)} replicates, none shared",
+           "",
+           "  [unpaired] the two receptors share no replicate label, so the "
+           "replicates",
+           "  are not partners and the difference cannot be formed within one. "
+           "None of",
+           "  the noise cancels, so the uncertainty below is wider than a "
+           "paired one",
+           "  and a difference has to clear more to mean the same thing."]
+
+    rows = []
+    for cpd, g in d.groupby("compound"):
+        row = {"compound": cpd}
+        keep = True
+        for c in cols:
+            # the mean over the poses kept for that replicate, then over
+            # replicates, so a replicate with more poses does not weigh more
+            per = g.groupby(["receptor", "seed"])[c].mean()
+            for lab, key in ((a.a1, "a1"), (a.a2, "a2")):
+                if lab not in per.index.get_level_values(0):
+                    keep = False
+                    continue
+                v = per.loc[lab].to_numpy(float)
+                row[f"{c}_{key}_mean"] = float(np.mean(v))
+                row[f"{c}_{key}_sd"] = (float(np.std(v, ddof=1))
+                                        if len(v) > 1 else np.nan)
+                row[f"{c}_{key}_n"] = len(v)
+            if not keep:
+                continue
+            dv = row[f"{c}_a2_mean"] - row[f"{c}_a1_mean"]
+            if lower_is_better(c):
+                dv = -dv
+            row[f"{c}_delta"] = dv
+            s1, s2 = row[f"{c}_a1_sd"], row[f"{c}_a2_sd"]
+            n1, n2 = row[f"{c}_a1_n"], row[f"{c}_a2_n"]
+            if not (np.isnan(s1) or np.isnan(s2)):
+                # the standard error of an unpaired difference of means
+                row[f"{c}_se"] = float(np.sqrt(s1**2 / n1 + s2**2 / n2))
+                # a zero standard error means every replicate agreed exactly,
+                # which makes the ratio undefined rather than infinite; it is
+                # left empty and the zero spread is what the table shows
+                row[f"{c}_z"] = (dv / row[f"{c}_se"]
+                                 if row[f"{c}_se"] > 0 else np.nan)
+        if keep:
+            rows.append(row)
+    if not rows:
+        sys.exit("no compound has rows under both receptors")
+    r = pd.DataFrame(rows).sort_values(f"{a.col}_delta", ascending=False)
+
+    log.append("")
+    log.append(f"=== {a.col}: {a.label2} minus {a.label1}, unpaired ===")
+    log.append(f"  {'compound':10s}{a.label1:>9s}{'sd':>7s}"
+               f"{a.label2:>9s}{'sd':>7s}{'delta':>8s}{'se':>7s}{'z':>7s}")
+    for _, x in r.iterrows():
+        log.append(f"  {x['compound']:10s}"
+                   f"{x[f'{a.col}_a1_mean']:9.2f}{x[f'{a.col}_a1_sd']:7.2f}"
+                   f"{x[f'{a.col}_a2_mean']:9.2f}{x[f'{a.col}_a2_sd']:7.2f}"
+                   f"{x[f'{a.col}_delta']:+8.2f}"
+                   f"{x.get(f'{a.col}_se', np.nan):7.2f}"
+                   + (f"{x[f'{a.col}_z']:+7.2f}"
+                      if not pd.isna(x.get(f"{a.col}_z", np.nan)) else "      -"))
+    zc = r[f"{a.col}_z"].dropna() if f"{a.col}_z" in r.columns else pd.Series([])
+    nose = len(r) - len(zc)
+    if nose:
+        log.append("")
+        log.append(f"  [note] {nose} of {len(r)} compounds have zero spread "
+                   f"across replicates, so no ratio to their own spread can be "
+                   f"formed. Every conformer gave the same value for them")
+    if len(zc):
+        log.append("")
+        log.append(f"  |z| >= 2 (the difference is twice its own standard "
+                   f"error): {int((zc.abs() >= 2).sum())} of {len(zc)}")
+        log.append(f"  z is not a p value here: with {len(r1)} and {len(r2)} "
+                   f"replicates from one trajectory each, the replicates are "
+                   f"not independent samples of the protein, so it says how "
+                   f"large the difference is against this ensemble's own "
+                   f"spread and nothing about a population")
+
+    others = [c for c in cols if c != a.col]
+    if others:
+        log.append("")
+        log.append("=== the other criteria, same unpaired difference ===")
+        log.append("  a POSITIVE number favours " + a.label2
+                   + "; convention: "
+                   + ", ".join(f"{c} ({'lower' if lower_is_better(c) else 'higher'}"
+                               f" is better)" for c in others))
+        hdr = f"  {'compound':10s}"
+        for c in others:
+            hdr += f"{c[:11]:>13s}"
+        log.append(hdr + "   agree")
+        for _, x in r.iterrows():
+            line = f"  {x['compound']:10s}"
+            sg = [np.sign(x[f"{a.col}_delta"])]
+            for c in others:
+                v = x.get(f"{c}_delta")
+                line += "          n/a" if pd.isna(v) else f"{v:+13.3f}"
+                if not pd.isna(v):
+                    sg.append(np.sign(v))
+            npos = sum(1 for q in sg if q > 0)
+            nneg = sum(1 for q in sg if q < 0)
+            nzero = len(sg) - npos - nneg
+            # an exactly zero difference favours neither, so it is not counted
+            # against either side
+            if nneg == 0 and npos:
+                tag = f"{npos} -> {a.label2}" + (f", {nzero} zero" if nzero else "")
+                if not nzero:
+                    tag = f"all {npos} -> {a.label2}"
+            elif npos == 0 and nneg:
+                tag = f"all {nneg} -> {a.label1}" if not nzero \
+                    else f"{nneg} -> {a.label1}, {nzero} zero"
+            elif npos or nneg:
+                tag = f"split {npos}/{nneg}" + (f", {nzero} zero" if nzero else "")
+            else:
+                tag = "no difference on any"
+            log.append(line + f"   {tag}")
+
+    text = "\n".join(log)
+    print(text)
+    if a.out:
+        os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
+        r.to_csv(a.out + "_unpaired.csv", index=False)
+        with open(a.out + "_values.txt", "w") as f:
+            f.write(text + "\n")
+        print(f"\n[out] {a.out}_unpaired.csv\n      {a.out}_values.txt")
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--poses", required=True,
@@ -88,6 +241,24 @@ def main():
                      f"{', '.join(sorted(have))}")
 
     # the mean over the poses kept for that compound, receptor and seed
+    # pairing requires the two receptors to share replicate labels. A seed run
+    # does: seed s0 searched both. An ensemble run does not, because a1_c00 and
+    # a2_c00 are frames of different trajectories and are not partners. Pairing
+    # them anyway would difference unrelated numbers, and dropping the
+    # unmatched rows would silently discard everything, so which case this is
+    # gets decided and stated.
+    r1 = set(d.loc[d["receptor"] == a.a1, "seed"])
+    r2 = set(d.loc[d["receptor"] == a.a2, "seed"])
+    shared = r1 & r2
+    paired = len(shared) >= 2
+    if not paired:
+        if shared:
+            sys.exit(f"the two receptors share only {len(shared)} replicate "
+                     f"label(s), too few to pair and too many to treat as "
+                     f"independent. Check --a1/--a2 and --fields")
+        return unpaired(a, d, r1, r2)
+
+    d = d[d["seed"].isin(shared)]
     m = (d.groupby(["compound", "receptor", "seed"])[a.col]
           .mean().unstack("receptor"))
     if a.a1 not in m.columns or a.a2 not in m.columns:
