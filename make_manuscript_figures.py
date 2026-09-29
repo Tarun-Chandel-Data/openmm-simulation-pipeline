@@ -21,7 +21,7 @@ Then let it locate the inputs itself and draw whatever it finds:
 
     python make_manuscript_figures.py \
         --root ~/docking_files/TEST/new --root ~/sim/small_molecule/cx \
-        --label-a1 "CK2a" --label-a2 "CK2a-prime" \
+        --label-a1 "CK2α" --label-a2 "CK2α′" \
         --outdir figures
 
 Any input can be named explicitly instead, which overrides discovery:
@@ -309,7 +309,8 @@ def core_scaffold(smiles):
 
 
 # ---------------------------------------------------------------- figure 1
-def figure_scaffold_sar(d, outdir, min_members, log, lab1="a1", lab2="a2"):
+def figure_scaffold_sar(d, outdir, min_members, log,
+                        lab1="CK2\u03b1", lab2="CK2\u03b1\u2032"):
     d = d.copy()
     d["core"] = d.smiles.apply(core_scaffold)
     d["linker"] = d.smiles.apply(linker_length)
@@ -396,12 +397,21 @@ def figure_scaffold_sar(d, outdir, min_members, log, lab1="a1", lab2="a2"):
     _lo, _hi = axA.get_ylim()
     _pad = 0.13 * (_hi - _lo)
     axA.set_ylim(_lo - _pad, _hi + _pad)
-    axA.text(0.99, 0.985, f"{lab2}-preferring", transform=axA.transAxes,
-             ha="right", va="top", fontsize=7.5, color=C_A2,
-             bbox=dict(facecolor="white", alpha=0.8, edgecolor="none", pad=1.2))
-    axA.text(0.99, 0.015, f"{lab1}-preferring", transform=axA.transAxes,
-             ha="right", va="bottom", fontsize=7.5, color=C_A1,
-             bbox=dict(facecolor="white", alpha=0.8, edgecolor="none", pad=1.2))
+    _xs = np.concatenate([np.full(len(gg), n) for n, gg in g.groupby("linker")])
+    _ys = g.selectivity_log.to_numpy(float)
+    _xl, _yl = axA.get_xlim(), axA.get_ylim()
+    for _lab, _col, _half in ((f"{lab2}-preferring", C_A2, "top"),
+                              (f"{lab1}-preferring", C_A1, "bottom")):
+        # within the correct half of the plot, take the side holding fewer points
+        _sel = (_ys > (_yl[0]+_yl[1])/2) if _half == "top" else (_ys <= (_yl[0]+_yl[1])/2)
+        _fx = (_xs - _xl[0]) / ((_xl[1]-_xl[0]) or 1)
+        _left = int(((_fx < 0.5) & _sel).sum()); _right = int(((_fx >= 0.5) & _sel).sum())
+        _x, _ha = (0.015, "left") if _left <= _right else (0.985, "right")
+        axA.text(_x, 0.985 if _half == "top" else 0.015, _lab,
+                 transform=axA.transAxes, ha=_ha,
+                 va="top" if _half == "top" else "bottom",
+                 fontsize=7.5, color=_col,
+                 bbox=dict(facecolor="white", alpha=0.85, edgecolor="none", pad=1.5))
 
     if has_aff:
         axB = axes[1]
@@ -1665,10 +1675,10 @@ def main():
                          "columns and every directory of conformer PDBs, then "
                          "exit without plotting. Run this first to see what "
                          "the script can reach and what it matched")
-    ap.add_argument("--label-a1", default="a1",
-                    help="axis label for the first subunit (e.g. CK2a)")
-    ap.add_argument("--label-a2", default="a2",
-                    help="axis label for the second subunit (e.g. CK2a')")
+    ap.add_argument("--label-a1", default="CK2α",
+                    help="name of the first subunit, default CK2α")
+    ap.add_argument("--label-a2", default="CK2α′",
+                    help="name of the second subunit, default CK2α′")
     ap.add_argument("--ev-pattern", default=r"^EV",
                     help="figure 9: regex selecting the variant series in the "
                          "identifier column")

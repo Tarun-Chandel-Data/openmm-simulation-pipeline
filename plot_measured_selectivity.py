@@ -88,11 +88,9 @@ def main():
     p.add_argument("--val1-col", default="p_value_a1")
     p.add_argument("--val2-col", default="p_value_a2")
     p.add_argument("--diff-col", default="selectivity_log")
-    p.add_argument("--label1", default=None,
-                   help="name for the first subunit in the printed record. "
-                        "Defaults to the column name, so the record never "
-                        "claims a quantity the columns do not hold")
-    p.add_argument("--label2", default=None)
+    p.add_argument("--label1", default="CK2α",
+                   help="name for the first subunit in the printed record")
+    p.add_argument("--label2", default="CK2α′")
     p.add_argument("--ylabel-a", default="log(pCK2α′ − pCK2α)")
     p.add_argument("--ylabel-b", default="pActivity")
     p.add_argument("--noise-label", default="assay variation")

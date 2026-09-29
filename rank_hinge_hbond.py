@@ -146,8 +146,8 @@ def main():
     p.add_argument("--measured-col", default="measured",
                    help="measured selectivity, used only to report whether the "
                         "ranking tracks it where measurements exist")
-    p.add_argument("--label1", default="a1")
-    p.add_argument("--label2", default="a2")
+    p.add_argument("--label1", default="CK2α")
+    p.add_argument("--label2", default="CK2α′")
     p.add_argument("--top", type=int, default=20)
     p.add_argument("--target",
                    help="rank by engagement of these residues in the second "
