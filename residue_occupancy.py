@@ -48,6 +48,12 @@ def main():
                         "pose makes the bond; any counts it when any kept "
                         "pose does. best is the stricter claim and matches a "
                         "single-pose analysis")
+    p.add_argument("--rank-on", choices=["either", "both", "total", "delta"],
+                   default="either",
+                   help="the quantity the table is ordered by. either and "
+                        "both are hinge counts; total is the mean hydrogen "
+                        "bonds per conformer to any residue; delta is that "
+                        "total minus the other subunit's")
     p.add_argument("--rank-by",
                    help="receptor label whose 'either' count orders the "
                         "table. Defaults to the last --receptor given. The "
@@ -202,8 +208,18 @@ def main():
             sys.exit(f"--rank-by {rank_lab!r} is not one of: "
                      f"{', '.join(labs)}")
         other = l1 if rank_lab == l2 else l2
-        r = r.sort_values([f"{rank_lab}_either", f"{rank_lab}_both"],
-                          ascending=False)
+        if a.rank_on == "total":
+            keycol = f"{rank_lab}_total_mean"
+        elif a.rank_on == "delta":
+            r["total_delta"] = (r[f"{rank_lab}_total_mean"]
+                                - r[f"{other}_total_mean"])
+            keycol = "total_delta"
+        else:
+            keycol = f"{rank_lab}_{a.rank_on}"
+        if keycol not in r.columns:
+            sys.exit(f"--rank-on {a.rank_on} needs column {keycol!r}, which "
+                     f"is not in the table")
+        r = r.sort_values([keycol, f"{rank_lab}_either"], ascending=False)
         n1 = int(r[f"{l1}_n_conformer"].median())
         n2 = int(r[f"{l2}_n_conformer"].median())
         log.append("")
@@ -215,8 +231,11 @@ def main():
                    f"bridged; total = mean hydrogen bonds per conformer with "
                    f"its sd; other = mean residues engaged that are not the "
                    f"pair")
-        log.append(f"    ranked on {rank_lab} either; {other} is carried "
-                   f"beside it and is not ranked on")
+        what = {"either": f"{rank_lab} either (hinge)",
+                "both": f"{rank_lab} both (hinge bridged)",
+                "total": f"{rank_lab} total bonds to any residue",
+                "delta": f"total bonds, {rank_lab} minus {other}"}[a.rank_on]
+        log.append(f"    ranked on {what}; the rest is carried beside it")
         order = (rank_lab, other)
         hdr = f"  {'compound':9s}"
         for lab in order:
@@ -225,6 +244,8 @@ def main():
             hdr += f"{'either':>8s}{'both':>6s}"
             if f"{lab}_total_mean" in r.columns:
                 hdr += f"{'total':>8s}{'sd':>6s}{'other':>7s}"
+        if a.rank_on == "delta":
+            hdr += f"{'d total':>9s}"
         if a.show_diff:
             hdr += f"{'diff':>7s}"
         log.append(hdr)
@@ -239,6 +260,8 @@ def main():
                     line += (f"{x[f'{lab}_total_mean']:8.2f}"
                              f"{x[f'{lab}_total_sd']:6.2f}"
                              f"{x[f'{lab}_other_mean']:7.2f}")
+            if a.rank_on == "delta":
+                line += f"{x['total_delta']:+9.2f}"
             if a.show_diff:
                 line += f"{int(x['diff_either']):+7d}"
             log.append(line)
