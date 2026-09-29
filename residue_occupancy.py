@@ -165,6 +165,23 @@ def main():
                               for r in res))
             rec[f"{lab}_either"] = int(eith.sum())
             rec[f"{lab}_both"] = int(bothm.sum())
+            # the total, so a subunit whose hinge is untouched but whose other
+            # residues are engaged is not mistaken for one that is not bound
+            if "n_hbond" in gg.columns:
+                tot = gg.groupby("seed")["n_hbond"].first()
+                rec[f"{lab}_total_mean"] = float(tot.mean())
+                rec[f"{lab}_total_sd"] = (float(tot.std(ddof=1))
+                                          if len(tot) > 1 else np.nan)
+            # residues engaged that are not the hinge pair, counted per
+            # conformer and averaged
+            def n_other(sr):
+                out = []
+                for x in sr:
+                    lbl = [q for q in str(x).upper().split(";") if q]
+                    out.append(sum(1 for q in lbl if q not in res))
+                return float(np.mean(out)) if out else 0.0
+            rec[f"{lab}_other_mean"] = float(
+                gg.groupby("seed")["residues"].apply(n_other).mean())
 
     if not rows:
         sys.exit("no rows matched; check --receptor labels and that the "
@@ -195,7 +212,9 @@ def main():
         log.append(f"    {rank_lab}: {', '.join(shown(rank_lab))}   "
                    f"{other}: {', '.join(shown(other))}")
         log.append(f"    either = at least one of the pair; both = the pair "
-                   f"bridged")
+                   f"bridged; total = mean hydrogen bonds per conformer with "
+                   f"its sd; other = mean residues engaged that are not the "
+                   f"pair")
         log.append(f"    ranked on {rank_lab} either; {other} is carried "
                    f"beside it and is not ranked on")
         order = (rank_lab, other)
@@ -204,6 +223,8 @@ def main():
             for nm in shown(lab):
                 hdr += f"{nm:>9s}"
             hdr += f"{'either':>8s}{'both':>6s}"
+            if f"{lab}_total_mean" in r.columns:
+                hdr += f"{'total':>8s}{'sd':>6s}{'other':>7s}"
         if a.show_diff:
             hdr += f"{'diff':>7s}"
         log.append(hdr)
@@ -214,6 +235,10 @@ def main():
                     line += f"{int(x[f'{lab}_{c}']):9d}"
                 line += (f"{int(x[f'{lab}_either']):8d}"
                          f"{int(x[f'{lab}_both']):6d}")
+                if f"{lab}_total_mean" in r.columns:
+                    line += (f"{x[f'{lab}_total_mean']:8.2f}"
+                             f"{x[f'{lab}_total_sd']:6.2f}"
+                             f"{x[f'{lab}_other_mean']:7.2f}")
             if a.show_diff:
                 line += f"{int(x['diff_either']):+7d}"
             log.append(line)
@@ -231,6 +256,11 @@ def main():
                 vv = r[f"{lab}_{c}"]
                 log.append(f"      {nm}: median {vv.median():.0f}, "
                            f"max {vv.max():.0f}")
+            if f"{lab}_total_mean" in r.columns:
+                log.append(f"      total bonds per conformer: median "
+                           f"{r[f'{lab}_total_mean'].median():.2f}; "
+                           f"residues away from the pair: median "
+                           f"{r[f'{lab}_other_mean'].median():.2f}")
         if a.show_diff:
             log.append(f"    difference: median {dv.median():+.0f}, "
                        f"{int((dv > 0).sum())} favour {l2}, "
