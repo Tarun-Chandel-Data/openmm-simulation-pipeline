@@ -82,6 +82,18 @@ def main():
         sys.exit("no matrix held all the named compounds")
     t = pd.DataFrame(rows)
 
+    # two matrices can hold the same criterion and ensemble, differing only
+    # in which compounds were selected when they were written. Grouping on the
+    # criterion alone merges them and repeats every compound, which also makes
+    # the trend check see zero differences. Identical rows are dropped first,
+    # and what remains is grouped per file.
+    before = len(t)
+    t = t.drop_duplicates(subset=["ensemble", "criterion", "compound",
+                                  r1, r2]).copy()
+    if len(t) < before:
+        log.append(f"     [note] {before - len(t)} duplicate rows dropped: "
+                   f"the same criterion and ensemble appear in more than one "
+                   f"matrix file")
     for (ens, crit), g in t.groupby(["ensemble", "criterion"], sort=True):
         lo = any(x in crit.lower() for x in LOWER)
         log.append("")
