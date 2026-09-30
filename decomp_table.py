@@ -50,42 +50,75 @@ def term_of(text):
     return None
 
 
-def parse(path):
+def parse(path, region_want, section_want):
     """{(resname, resnum): {term: (avg, sd)}} from an MMPBSA decomposition
-    file, in either the plain or the comma separated layout."""
+    file.
+
+    These files hold the same table many times over: once per region
+    (Complex, Receptor, Ligand and their difference, DELTAS) and within each,
+    once per section (Total, Sidechain, Backbone). Reading straight through
+    and keeping the last row for each residue therefore returns the backbone
+    of whatever region came last, which is a small number for every residue
+    and looks like a real result. Each table is kept separately here and the
+    one asked for is returned, with what was found reported so the wrong one
+    cannot be used in silence."""
     raw = open(path, errors="replace").read().splitlines()
-    order, out, started = None, {}, False
+    tables, order = {}, None
+    region, section, cols = None, None, None
     for ln in raw:
-        low = ln.lower()
+        low = ln.strip().lower()
+        m = re.match(r"^(complex|receptor|ligand|deltas)\s*:?\s*$", low)
+        if m:
+            region, section, cols = m.group(1).upper(), None, None
+            continue
+        m = re.match(r"^(total|sidechain|backbone)\s+energy\s+decomposition",
+                     low)
+        if m:
+            section = m.group(1).upper()
+            cols = None
+            continue
         if "residue" in low and any(
                 any(k in low for k in keys) for _, keys in TERMS):
-            seen, cols = set(), []
+            seen, c = set(), []
             for cell in re.split(r",|\|", ln):
-                s = term_of(cell)
-                if s and s not in seen:
-                    seen.add(s)
-                    cols.append(s)
-            if len(cols) >= 2:
-                order, started = cols, True
+                sh = term_of(cell)
+                if sh and sh not in seen:
+                    seen.add(sh)
+                    c.append(sh)
+            if len(c) >= 2:
+                cols, order = c, c
             continue
-        if not started:
+        if cols is None:
             continue
         m = RESID.search(ln)
         if not m:
             continue
         vals = [float(x) for x in FLOAT.findall(ln)]
-        if len(vals) < len(order):
+        if len(vals) < len(cols):
             continue
         # the file gives each term as an average, a deviation and an error;
         # whichever of those it carries, the average comes first
-        per = len(vals) // len(order)
+        per = len(vals) // len(cols)
         d = {}
-        for i, t in enumerate(order):
-            a = vals[i * per]
-            sd = vals[i * per + 1] if per >= 2 else np.nan
-            d[t] = (a, sd)
-        out[(m.group(1).upper(), int(m.group(2)))] = d
-    return out, order
+        for i, t in enumerate(cols):
+            d[t] = (vals[i * per],
+                    vals[i * per + 1] if per >= 2 else np.nan)
+        tables.setdefault((region, section), {})[
+            (m.group(1).upper(), int(m.group(2)))] = d
+
+    if not tables:
+        return {}, order, None
+    key = (region_want, section_want)
+    if key not in tables:
+        # fall back to the closest thing present, preferring the difference
+        cand = [k for k in tables
+                if (region_want is None or k[0] == region_want)
+                and (section_want is None or k[1] == section_want)]
+        if not cand:
+            cand = sorted(tables, key=lambda k: (k[0] != "DELTAS",
+                                                 k[1] != "TOTAL"))
+        key = cand[0]
+    return tables[key], order, (key, sorted(tables))
 
 
 def main():
@@ -102,6 +135,12 @@ def main():
                         "'LYS69[a1=LYS68]'")
     p.add_argument("--terms", default="EEL,POL,TOTAL",
                    help="of INT, VDW, EEL, POL, NPOL, TOTAL")
+    p.add_argument("--region", default="DELTAS",
+                   help="which of Complex, Receptor, Ligand or DELTAS to "
+                        "read. DELTAS is the difference and the only one that "
+                        "is a contribution to binding")
+    p.add_argument("--section", default="TOTAL",
+                   help="TOTAL, SIDECHAIN or BACKBONE")
     p.add_argument("--test-subunit", default="a2")
     p.add_argument("--ref-subunit", default="a1")
     p.add_argument("--width", type=int, default=11)
@@ -167,13 +206,20 @@ def main():
 
     data, log = {}, []
     for c, s, f in systems:
-        d, order = parse(f)
+        d, order, got = parse(f, a.region.upper(), a.section.upper())
         if not d:
             sys.exit(f"no residue rows recognised in {f}. Run again with "
                      f"--dump and send the output")
         data[(c, s)] = d
-        log.append(f"[in] {c} {s}: {len(d)} residues, terms "
-                   f"{', '.join(order)}  ({os.path.basename(f)})")
+        used, avail = got
+        warn = ("" if used == (a.region.upper(), a.section.upper())
+                else f"   <-- asked for {a.region.upper()}/"
+                     f"{a.section.upper()}, not present")
+        log.append(f"[in] {c} {s}: {len(d)} residues from "
+                   f"{used[0]}/{used[1]}, terms {', '.join(order)}  "
+                   f"({os.path.basename(f)}){warn}")
+        log.append(f"     tables in this file: "
+                   + ", ".join(f"{r}/{sc}" for r, sc in avail))
 
     comps, subs = [], []
     for c, s, _ in systems:
