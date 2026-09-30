@@ -112,6 +112,11 @@ def main():
     p.add_argument("--pocket-center", default=",".join(f"{v:g}" for v in BOX))
     p.add_argument("--pocket-radius", type=float, default=12.0)
     p.add_argument("--width", type=int, default=9)
+    p.add_argument("--diagnose", action="store_true",
+                   help="for each pair also report how many core atoms "
+                        "matched and how far the core's centroid moved, which "
+                        "separates a scaffold sitting somewhere else from one "
+                        "rotated in place")
     p.add_argument("--out")
     a = p.parse_args()
 
@@ -224,14 +229,27 @@ def main():
                 return float(rdMolAlign.CalcRMS(m1, m2))
             except Exception:
                 return np.nan
-        i1 = m1.GetSubstructMatch(core)
-        i2 = m2.GetSubstructMatch(core)
-        if not i1 or not i2 or len(i1) != len(i2):
+        # a symmetric core matches its own atoms in more than one way, and
+        # taking one arbitrary match in each molecule can pair the two rings
+        # of a scaffold the wrong way round and report a flip where there is
+        # none. Every mapping is tried and the smallest distance kept, which
+        # is what makes this a symmetry-aware core RMSD rather than a
+        # labelling artefact.
+        ms1 = m1.GetSubstructMatches(core, uniquify=False, maxMatches=500)
+        ms2 = m2.GetSubstructMatches(core, uniquify=False, maxMatches=500)
+        if not ms1 or not ms2:
             return np.nan
         c1, c2 = m1.GetConformer(), m2.GetConformer()
+        i1 = ms1[0]
         p1 = np.array([list(c1.GetAtomPosition(i)) for i in i1])
-        p2 = np.array([list(c2.GetAtomPosition(i)) for i in i2])
-        return float(np.sqrt(((p1 - p2) ** 2).sum(axis=1).mean()))
+        best = np.inf
+        for i2 in ms2:
+            if len(i2) != len(i1):
+                continue
+            p2 = np.array([list(c2.GetAtomPosition(i)) for i in i2])
+            best = min(best, float(np.sqrt(
+                ((p1 - p2) ** 2).sum(axis=1).mean())))
+        return np.nan if best is np.inf or not np.isfinite(best) else best
 
     order = keep if keep else sorted(best)
     rows = []
@@ -280,6 +298,39 @@ def main():
                        f"superposing"
                        + ("   (already in a common frame)"
                           if abs(pr[0] - pr[1]) < 0.05 else ""))
+
+    if a.diagnose and core is not None:
+        log.append("")
+        log.append("=== core diagnostic ===")
+        log.append("    atoms is how many of the core matched; shift is how "
+                   "far its centroid moved")
+        log.append("    a small shift with a large core RMSD means the "
+                   "scaffold turned in place rather than moved")
+        log.append(f"  {'compound':10s}{'pair':14s}{'atoms':>7s}"
+                   f"{'shift':>8s}{'core':>8s}{'all':>8s}")
+        for c in order:
+            if c not in best:
+                continue
+            for x, y in pairs:
+                m1, m2 = best[c].get(x), best[c].get(y)
+                tf = xform.get((x, y))
+                if m1 is None or m2 is None or tf is None:
+                    continue
+                m2 = moved(m2, *tf)
+                i1 = m1.GetSubstructMatch(core)
+                i2 = m2.GetSubstructMatch(core)
+                if not i1 or not i2:
+                    log.append(f"  {c:10s}{x + '>' + y:14s}"
+                               f"{'0':>7s}{'-':>8s}{'-':>8s}{'-':>8s}"
+                               f"   core does not match")
+                    continue
+                c1, c2 = m1.GetConformer(), m2.GetConformer()
+                p1 = np.array([list(c1.GetAtomPosition(i)) for i in i1])
+                p2 = np.array([list(c2.GetAtomPosition(i)) for i in i2])
+                shift = float(np.linalg.norm(p1.mean(0) - p2.mean(0)))
+                log.append(f"  {c:10s}{x + '>' + y:14s}{len(i1):7d}"
+                           f"{shift:8.2f}{rms(m1, m2, True):8.2f}"
+                           f"{rms(m1, m2, False):8.2f}")
 
     if rows:
         log.append("")

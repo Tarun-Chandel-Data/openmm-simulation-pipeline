@@ -174,14 +174,27 @@ def main():
         reported as missing rather than silently compared whole."""
         if not use_core:
             return float(rdMolAlign.CalcRMS(m1, m2))
-        i1 = m1.GetSubstructMatch(core)
-        i2 = m2.GetSubstructMatch(core)
-        if not i1 or not i2 or len(i1) != len(i2):
+        # a symmetric core matches its own atoms in more than one way, and
+        # taking one arbitrary match in each molecule can pair the two rings
+        # of a scaffold the wrong way round and report a flip where there is
+        # none. Every mapping is tried and the smallest distance kept, which
+        # is what makes this a symmetry-aware core RMSD rather than a
+        # labelling artefact.
+        ms1 = m1.GetSubstructMatches(core, uniquify=False, maxMatches=500)
+        ms2 = m2.GetSubstructMatches(core, uniquify=False, maxMatches=500)
+        if not ms1 or not ms2:
             return np.nan
         c1, c2 = m1.GetConformer(), m2.GetConformer()
+        i1 = ms1[0]
         p1 = np.array([list(c1.GetAtomPosition(i)) for i in i1])
-        p2 = np.array([list(c2.GetAtomPosition(i)) for i in i2])
-        return float(np.sqrt(((p1 - p2) ** 2).sum(axis=1).mean()))
+        best = np.inf
+        for i2 in ms2:
+            if len(i2) != len(i1):
+                continue
+            p2 = np.array([list(c2.GetAtomPosition(i)) for i in i2])
+            best = min(best, float(np.sqrt(
+                ((p1 - p2) ** 2).sum(axis=1).mean())))
+        return np.nan if best is np.inf or not np.isfinite(best) else best
 
     w = a.width
     heads = [f"{reps[i-1].split('_')[-1]}>{reps[i].split('_')[-1]}"
