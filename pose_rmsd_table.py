@@ -68,6 +68,13 @@ def main():
     p.add_argument("--select-by", default="CNNscore")
     p.add_argument("--only", required=True,
                    help="comma-separated compounds, in the order to print")
+    p.add_argument("--core",
+                   help="a SMARTS for the rigid part. When given, the RMSD is "
+                        "reported for those atoms alone as well as for the "
+                        "whole molecule: a core held in place while a flexible "
+                        "arm swings gives a large whole-molecule RMSD and a "
+                        "small core one, which is a different situation from "
+                        "the molecule relocating")
     p.add_argument("--ensemble",
                    help="directory of conformer pdb files. Used to measure how "
                         "far the protein itself moved between consecutive "
@@ -155,6 +162,27 @@ def main():
                            f"are probably not superposed, and an in-place "
                            f"ligand RMSD is then not interpretable")
 
+    core = None
+    if a.core:
+        core = Chem.MolFromSmarts(a.core)
+        if core is None:
+            sys.exit(f"--core is not a valid SMARTS: {a.core!r}")
+
+    def rms(m1, m2, use_core):
+        """Symmetry-aware RMSD in place. With a core, the molecules are cut
+        down to the matched atoms first; a molecule the core does not match is
+        reported as missing rather than silently compared whole."""
+        if not use_core:
+            return float(rdMolAlign.CalcRMS(m1, m2))
+        i1 = m1.GetSubstructMatch(core)
+        i2 = m2.GetSubstructMatch(core)
+        if not i1 or not i2 or len(i1) != len(i2):
+            return np.nan
+        c1, c2 = m1.GetConformer(), m2.GetConformer()
+        p1 = np.array([list(c1.GetAtomPosition(i)) for i in i1])
+        p2 = np.array([list(c2.GetAtomPosition(i)) for i in i2])
+        return float(np.sqrt(((p1 - p2) ** 2).sum(axis=1).mean()))
+
     w = a.width
     heads = [f"{reps[i-1].split('_')[-1]}>{reps[i].split('_')[-1]}"
              for i in range(1, len(reps))]
@@ -165,20 +193,26 @@ def main():
     log.append(f"    the last column closes the loop, last back to first")
     log.append(f"  {'compound':10s}" + "".join(f"{h:>{w+3}s}" for h in heads)
                + f"{'mean':>{w+1}s}{'max':>{w}s}")
-    rows = {}
+    rows, rows_core = {}, {}
     for c in want:
         ms = [best[c].get(r) for r in reps]
-        v = []
-        for i in range(1, len(ms)):
-            v.append(np.nan if (ms[i] is None or ms[i - 1] is None)
-                     else float(rdMolAlign.CalcRMS(ms[i], ms[i - 1])))
-        v.append(np.nan if (ms[-1] is None or ms[0] is None)
-                 else float(rdMolAlign.CalcRMS(ms[-1], ms[0])))
-        rows[c] = np.asarray(v)
-        cells = "".join(" " * (w + 2) + "-" if np.isnan(x)
-                        else f"{x:>{w+3}.2f}" for x in v)
-        log.append(f"  {c:10s}{cells}"
-                   f"{np.nanmean(v[:-1]):>{w+1}.2f}{np.nanmax(v[:-1]):>{w}.2f}")
+        for use_core, store in ((False, rows),) + \
+                (((True, rows_core),) if core is not None else ()):
+            v = []
+            for i in range(1, len(ms)):
+                v.append(np.nan if (ms[i] is None or ms[i - 1] is None)
+                         else rms(ms[i], ms[i - 1], use_core))
+            v.append(np.nan if (ms[-1] is None or ms[0] is None)
+                     else rms(ms[-1], ms[0], use_core))
+            store[c] = np.asarray(v)
+        for tag, store in (("", rows),) + \
+                ((("core", rows_core),) if core is not None else ()):
+            v = store[c]
+            cells = "".join(" " * (w + 2) + "-" if np.isnan(x)
+                            else f"{x:>{w+3}.2f}" for x in v)
+            log.append(f"  {(c + ' ' + tag).strip():10s}{cells}"
+                       f"{np.nanmean(v[:-1]):>{w+1}.2f}"
+                       f"{np.nanmax(v[:-1]):>{w}.2f}")
     if prot is not None:
         log.append(f"  {'protein':10s}"
                    + "".join(f"{x:>{w+3}.2f}" for x in prot))
@@ -199,6 +233,21 @@ def main():
     log.append("  a ratio near 1 means the pose is riding the protein's "
                "movement; well above 1 means the ligand is finding a "
                "different place to sit")
+    if core is not None:
+        log.append("")
+        log.append("=== the core against the whole molecule ===")
+        for c in want:
+            vw = float(np.nanmean(rows[c][:-1]))
+            vc = float(np.nanmean(rows_core[c][:-1]))
+            if np.isnan(vc):
+                log.append(f"  {c}: the core SMARTS matched no pose")
+                continue
+            log.append(f"  {c}: whole {vw:.2f} A, core {vc:.2f} A"
+                       f"   the core is {vw - vc:+.2f} A steadier")
+        log.append("  a small core RMSD under a large whole-molecule one "
+                   "means the core is anchored and the rest is swinging: the "
+                   "core's contacts are then comparable across conformers "
+                   "and the arm's are not")
 
     text = "\n".join(log)
     print(text)
