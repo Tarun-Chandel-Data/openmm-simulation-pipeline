@@ -142,16 +142,19 @@ def main():
     for lab in ax.get_yticklabels():
         lab.set_color(INK)
     ax.set_title(f"{a.label} hinge engagement, best pose of each conformer",
-                 loc="left", fontsize=8.5, pad=22, color=INK)
+                 loc="left", fontsize=8.5, pad=8, color=INK)
 
-    # in axes coordinates, so it sits between the title and the plot whatever
-    # the figure height; a figure-coordinate anchor drifts as rows are added
+    # below the axis label. The offset is given in axes fractions, so it is
+    # scaled by the axes height, which grows with the number of rows; without
+    # that the gap would widen as compounds are added
+    axes_h = fig.get_size_inches()[1] - 1.05
     ax.legend(handles=[Patch(facecolor=C_ONE_A, label=f"{n1} only"),
                        Patch(facecolor=C_BOTH, label="both bridged"),
                        Patch(facecolor=C_ONE_B, label=f"{n2} only")],
-              frameon=False, fontsize=6.5, ncol=3, loc="lower left",
-              bbox_to_anchor=(0.0, 1.002), handlelength=1.1,
-              handleheight=0.9, columnspacing=1.3, labelcolor=MUTED)
+              frameon=False, fontsize=6.5, ncol=3, loc="upper left",
+              bbox_to_anchor=(0.0, -0.40 / max(axes_h, 0.6)),
+              handlelength=1.1, handleheight=0.9, columnspacing=1.3,
+              labelcolor=MUTED)
 
     fig.savefig(a.out, dpi=a.dpi, bbox_inches="tight", pad_inches=0.12)
     plt.close(fig)
