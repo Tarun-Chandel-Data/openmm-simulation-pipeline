@@ -62,7 +62,11 @@ def main():
                    help="residues to test for a hydrogen bond, as the "
                         "receptor names them")
     p.add_argument("--only", help="comma-separated compounds")
-    p.add_argument("--select-by", default="CNNscore")
+    p.add_argument("--select-by", default="CNNscore",
+                   help="pose property the best pose is chosen on. A score "
+                        "is taken at its highest and an affinity in kcal/mol "
+                        "at its lowest, so minimizedAffinity picks the "
+                        "tightest pose rather than the loosest")
     p.add_argument("--props", default="CNNscore,CNNaffinity,minimizedAffinity")
     p.add_argument("--dist", type=float, default=3.5)
     p.add_argument("--h-dist", type=float, default=2.5)
@@ -89,7 +93,15 @@ def main():
             sys.exit(f"receptor not found: {rec}")
         structs.append((name, d, rec))
 
-    log = [f"[in] {len(structs)} structures, best pose by {a.select_by}",
+    # a docking affinity in kcal/mol is better the lower it is; a pose score
+    # and the CNN's own affinity estimate are better the higher
+    sl = a.select_by.lower()
+    low_best = "cnn" not in sl and any(
+        m in sl for m in ("affinity", "vina", "energy", "rmsd"))
+    sign = -1.0 if low_best else 1.0
+
+    log = [f"[in] {len(structs)} structures, best pose by {a.select_by} "
+           f"({'lowest' if low_best else 'highest'})",
            f"     hydrogen bonds: D-A <= {a.dist} A, H...A <= {a.h_dist} A, "
            f"D-H...A >= {a.angle:g} deg, antecedent >= "
            f"{a.antecedent_angle:g} deg",
@@ -117,7 +129,7 @@ def main():
                 v = prop(m, a.select_by)
                 if np.isnan(v):
                     continue
-                if tv is None or v > tv:
+                if tv is None or sign * v > sign * tv:
                     top, tv = m, v
             if top is None:
                 notes.append(f"     [note] {name} {c}: no pose carried "
@@ -150,7 +162,7 @@ def main():
     log.append("=== top pose in each crystal structure ===")
     log.append(f"    hbond columns are the count to that residue in the top "
                f"pose; total is to every residue")
-    hdr = f"  {'compound':9s}{'structure':10s}{'pose':>6s}"
+    hdr = f"  {'compound':9s}{'structure':10s}{'poses':>6s}"
     for k in props:
         hdr += f"{k[:11]:>12s}"
     for r in res:
