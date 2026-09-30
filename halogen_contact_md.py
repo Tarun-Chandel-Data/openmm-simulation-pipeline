@@ -115,6 +115,12 @@ def main():
     p.add_argument("--target-atoms", default="",
                    help="atom names on the target, e.g. NZ. Default is every "
                         "nitrogen and oxygen it carries")
+    p.add_argument("--scan-ligand", action="store_true",
+                   help="rank every heavy atom of the ligand by how close it "
+                        "gets to the target, instead of reporting only the "
+                        "halogens. Ruling an atom out leaves open which atom "
+                        "it actually was; this answers that")
+    p.add_argument("--scan-top", type=int, default=10)
     p.add_argument("--halogens", default="auto",
                    help="'auto' for every Cl, Br, I and F on the ligand, or "
                         "explicit atom names")
@@ -203,6 +209,31 @@ def main():
 
     log.append("")
     tname = f"{tgt.name}{tgt.resSeq}"
+    if a.scan_ligand:
+        heavy = [at for at in lig.atoms if at.element.symbol != "H"]
+        pr = np.array([[at.index, j] for at in heavy for j in tat])
+        dd = md.compute_distances(t, pr) * 10.0
+        dd = dd.reshape(t.n_frames, len(heavy), len(tat)).min(axis=2)
+        rank = sorted(
+            ((at.name, at.element.symbol, float(dd[:, k].mean()),
+              float(dd[:, k].min()),
+              float((dd[:, k] <= a.cutoff * 10).mean() * 100))
+             for k, at in enumerate(heavy)), key=lambda r: r[2])
+        log.append(f"=== every ligand heavy atom, ranked by distance to "
+                   f"{tname} ===")
+        log.append(f"    nearest over {', '.join(top.atom(i).name for i in tat)}"
+                   f"; {len(heavy)} heavy atoms in all")
+        log.append(f"  {'atom':8s}{'el':4s}{'mean':>8s}{'min':>8s}"
+                   f"{'within %':>10s}")
+        for nm, el, mu, mn, wi in rank[:a.scan_top]:
+            log.append(f"  {nm:8s}{el:4s}{mu:8.2f}{mn:8.2f}{wi:10.1f}")
+        hal_pos = [(i + 1, r) for i, r in enumerate(rank) if r[1] in HALOGEN]
+        if hal_pos:
+            log.append("    where the halogens rank: "
+                       + ", ".join(f"{r[0]} is {i} of {len(rank)} "
+                                   f"(mean {r[2]:.2f} A)"
+                                   for i, r in hal_pos))
+        log.append("")
     log.append(f"=== halogen contact with {tname} ===")
     log.append(f"  {'atom':7s}{'mean':>8s}{'min':>8s}{'within':>9s}"
                f"{'angle':>8s}{'on axis':>9s}   nearest target atom")
