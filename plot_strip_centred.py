@@ -63,6 +63,13 @@ def main():
     p.add_argument("--label1", default="CK2α")
     p.add_argument("--label2", default="CK2α′")
     p.add_argument("--only", help="comma-separated compounds to keep")
+    p.add_argument("--marks", choices=["interval", "strip"],
+                   default="interval",
+                   help="interval draws a median, the middle half and the "
+                        "full range: 2 marks per compound. strip draws every "
+                        "conformer as a dot, which at 20 conformers and two "
+                        "subunits is 40 overlapping points per row and is "
+                        "unreadable past a handful of compounds")
     p.add_argument("--raw", action="store_true",
                    help="do not remove the conformer effect. The compounds "
                         "then differ by less than the conformer spread and "
@@ -139,19 +146,32 @@ def main():
     rng = np.random.default_rng(0)
     for ax, (name, mats) in zip(axes, crits):
         lo = False
-        for r, col, off in ((r1, C_A1, -0.17), (r2, C_A2, 0.17)):
+        for r, col, off in ((r1, C_A1, -0.19), (r2, C_A2, 0.19)):
             v, lo = prep(mats[r], name)
             v = v[order]
             for i in range(n):
                 row = v[i][~np.isnan(v[i])]
-                # a small deterministic jitter so coincident points are
-                # countable; the seed is fixed so the figure redraws identically
-                j = rng.uniform(-0.055, 0.055, row.size)
-                ax.scatter(row, np.full(row.size, i + off) + j, s=3.2,
-                           color=col, alpha=0.55, linewidths=0, zorder=3)
-                med = np.median(row)
-                ax.plot([med, med], [i + off - 0.115, i + off + 0.115],
-                        color=col, lw=1.5, zorder=4, solid_capstyle="butt")
+                if not row.size:
+                    continue
+                y = i + off
+                q1, med, q3 = np.percentile(row, [25, 50, 75])
+                if a.marks == "strip":
+                    j = rng.uniform(-0.06, 0.06, row.size)
+                    ax.scatter(row, np.full(row.size, y) + j, s=3.2,
+                               color=col, alpha=0.55, linewidths=0, zorder=3)
+                else:
+                    # the full range behind, the middle half in front, the
+                    # median on top: the shape of the distribution without one
+                    # mark per conformer
+                    ax.plot([row.min(), row.max()], [y, y], color=col,
+                            lw=0.8, alpha=0.45, zorder=2,
+                            solid_capstyle="butt")
+                    ax.plot([q1, q3], [y, y], color=col, lw=3.4, alpha=0.85,
+                            zorder=3, solid_capstyle="butt")
+                ax.plot([med, med], [y - 0.135, y + 0.135],
+                        color="#ffffff" if a.marks == "interval" else col,
+                        lw=1.6 if a.marks == "interval" else 1.5, zorder=4,
+                        solid_capstyle="butt")
         if not a.raw:
             ax.axvline(0, color=RULE, lw=0.8, zorder=1)
         ax.grid(axis="x", color="#f0f0ef", lw=0.5, zorder=0)
@@ -169,13 +189,21 @@ def main():
     for lab in axes[0].get_yticklabels():
         lab.set_color(INK)
 
-    h = [Line2D([], [], marker="o", ls="none", ms=4.5, color=C_A2,
-                label=a.label2),
-         Line2D([], [], marker="o", ls="none", ms=4.5, color=C_A1,
-                label=a.label1),
-         Line2D([], [], color=MUTED, lw=1.5, label="median")]
+    if a.marks == "interval":
+        h = [Line2D([], [], color=C_A2, lw=3.4, label=a.label2),
+             Line2D([], [], color=C_A1, lw=3.4, label=a.label1),
+             Line2D([], [], color=MUTED, lw=0.8, alpha=0.45,
+                    label="full range over the conformers"),
+             Line2D([], [], color=MUTED, lw=3.4, alpha=0.85,
+                    label="middle half")]
+    else:
+        h = [Line2D([], [], marker="o", ls="none", ms=4.5, color=C_A2,
+                    label=a.label2),
+             Line2D([], [], marker="o", ls="none", ms=4.5, color=C_A1,
+                    label=a.label1),
+             Line2D([], [], color=MUTED, lw=1.5, label="median")]
     axes_h = fig.get_size_inches()[1] - 1.35
-    axes[0].legend(handles=h, frameon=False, fontsize=6.5, ncol=3,
+    axes[0].legend(handles=h, frameon=False, fontsize=6.5, ncol=len(h),
                    loc="upper left",
                    bbox_to_anchor=(0.0, -0.62 / max(axes_h, 0.6)),
                    handlelength=1.3, columnspacing=1.4, labelcolor=MUTED)
