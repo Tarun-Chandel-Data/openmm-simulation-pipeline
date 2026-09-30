@@ -38,13 +38,15 @@ plt.rcParams.update({
     "xtick.major.width": 0.6, "ytick.major.width": 0.0,
     "xtick.major.size": 2.5, "ytick.major.size": 0,
 })
-# validated light-mode categorical slots 1, 3, 2 (blue, aqua, orange):
-# node validate_palette.js "#2a78d6,#eb6834,#1baf7a" --mode light -> all pass,
-# worst adjacent dE 9.2 deutan / 27.6 normal. The aqua carries a contrast warn
-# against the surface, so the segments are labelled, which is the relief.
-C_ONE_A = "#1baf7a"     # the discriminating residue alone
-C_BOTH = "#2a78d6"      # both bridged
-C_ONE_B = "#eb6834"     # the shared backbone residue alone
+# the manuscript's own palette, checked as a categorical triple:
+# node validate_palette.js "#d1495b,#7b5cd6,#1b7a4b" --mode light -> all pass,
+# worst adjacent dE 20.2 protan / 23.8 normal, and every slot clears 3:1
+# against the surface, so no contrast relief is owed. The red is the one this
+# work uses for the second subunit throughout, and it carries the residue that
+# distinguishes it.
+C_ONE_A = "#d1495b"     # the discriminating residue alone
+C_BOTH = "#7b5cd6"      # both bridged
+C_ONE_B = "#1b7a4b"     # the shared backbone residue alone
 INK, MUTED = "#0b0b0b", "#52514e"
 GAP = 0.09              # surface gap between stacked segments, in bar units
 
@@ -121,18 +123,10 @@ def main():
         ax.text(v + 0.28, yi, f"{v:.0f}", va="center", ha="left",
                 fontsize=6.5, color=INK, zorder=4)
 
-    med = float(np.median(d[f"{a.receptor}_either"]))
-    ax.axvline(med, color="#b9b8b4", lw=0.7, ls=(0, (3, 2)), zorder=1)
-    # anchored to the left of the line: at the right it runs off the axis,
-    # since the line sits near the top of the range by construction
-    ax.text(med - 0.3, -1.05, f"median {med:.0f}", fontsize=6, color=MUTED,
-            va="center", ha="right", zorder=4)
-
     ax.set_yticks(y)
     ax.set_yticklabels(d["compound"].astype(str), fontsize=6.5)
     ax.set_xlim(0, n)
-    # room below the last bar for the median note, which otherwise sits on it
-    ax.set_ylim(-1.45, len(d) - 0.1)
+    ax.set_ylim(-0.75, len(d) - 0.1)
     ax.set_xticks(np.arange(0, n + 1, 5))
     ax.set_xlabel(f"conformers of {n} in which the residue is hydrogen bonded",
                   fontsize=7.5)
@@ -159,7 +153,7 @@ def main():
     fig.savefig(a.out, dpi=a.dpi, bbox_inches="tight", pad_inches=0.12)
     plt.close(fig)
     print(f"[out] {a.out}  ({a.dpi} dpi, {len(d)} compounds of {len(pd.read_csv(a.file))})")
-    # the table view the contrast warning obliges
+    # the same numbers as text, for a reader who cannot separate the fills
     txt = os.path.splitext(a.out)[0] + "_values.txt"
     with open(txt, "w") as f:
         f.write(f"{a.label} hinge engagement, conformers of {n}\n")
