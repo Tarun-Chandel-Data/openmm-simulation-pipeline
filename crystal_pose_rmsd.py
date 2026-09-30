@@ -190,11 +190,27 @@ def main():
 
     # one transform per pair, taking the second structure's frame onto the first
     xform, prot = {}, {}
+    # The pocket is chosen once, in the reference structure, because the box
+    # centre is a point in that structure's frame and means nothing in
+    # another's. Selecting it afresh per pair asked whether the second
+    # structure happened to share the reference's frame, and a structure
+    # deposited elsewhere then matched no residue at all.
+    ref = names[0]
+    pocket_keys = None
+    if a.align == "pocket":
+        pocket_keys = {k for k, v in cas[ref].items()
+                       if np.linalg.norm(v - ctr) <= a.pocket_radius}
+        log.append(f"     pocket taken from {ref}: {len(pocket_keys)} "
+                   f"alpha carbons")
+        if not pocket_keys:
+            sys.exit(f"no alpha carbon of {ref} lies within "
+                     f"{a.pocket_radius:g} A of {a.pocket_center}; the centre "
+                     f"is not in this structure's frame")
+
     for x, y in pairs:
         shared = sorted(set(cas[x]) & set(cas[y]))
-        if a.align == "pocket":
-            shared = [k for k in shared
-                      if np.linalg.norm(cas[x][k] - ctr) <= a.pocket_radius]
+        if pocket_keys is not None:
+            shared = [k for k in shared if k in pocket_keys]
         if len(shared) < 3:
             notes.append(f"     [note] {x} vs {y}: only {len(shared)} shared "
                          f"alpha carbons; cannot superpose")
