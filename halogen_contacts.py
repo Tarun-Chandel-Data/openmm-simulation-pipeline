@@ -68,6 +68,13 @@ def main():
     p.add_argument("--element", default="Cl")
     p.add_argument("--offset", type=int, default=0,
                    help="added to the residue numbers when labelling")
+    p.add_argument("--cutoff", type=float, default=5.0,
+                   help="a residue counts as present when one of its heavy "
+                        "atoms is within this of the atom. 0 falls back to "
+                        "the single nearest residue")
+    p.add_argument("--per-conformer", action="store_true",
+                   help="also list, conformer by conformer, the residues "
+                        "found")
     p.add_argument("--top", type=int, default=8,
                    help="residues shown per atom, most frequent first")
     p.add_argument("--out")
@@ -131,8 +138,21 @@ def main():
             for rank, ai in enumerate(hits, 1):
                 q = np.array(conf.GetAtomPosition(ai))
                 d = np.linalg.norm(px - q, axis=1)
-                j = int(np.argmin(d))
-                per[rank].append((str(pl[j]), float(d[j])))
+                if a.cutoff > 0:
+                    # every residue with a heavy atom inside the shell, each
+                    # at its own closest approach, so one residue contributes
+                    # one distance rather than one per atom
+                    m = d <= a.cutoff
+                    near = {}
+                    for lab, dist in zip(pl[m], d[m]):
+                        lab = str(lab)
+                        if lab not in near or dist < near[lab]:
+                            near[lab] = float(dist)
+                    per[rank].append((rep, sorted(near.items(),
+                                                  key=lambda kv: kv[1])))
+                else:
+                    j = int(np.argmin(d))
+                    per[rank].append((rep, [(str(pl[j]), float(d[j]))]))
         if not per:
             notes.append(f"     [note] {cpd} has no {a.element} atom")
             continue
@@ -146,38 +166,69 @@ def main():
         log.append(f"     residue numbers printed with an offset of "
                    f"{a.offset:+d}")
     log.append("")
-    log.append(f"=== residue nearest each {a.element}, counted over the "
-               f"conformers ===")
+    log.append(f"=== residues within {a.cutoff:g} A of each {a.element}, "
+               f"counted over the conformers ===" if a.cutoff > 0 else
+               f"=== residue nearest each {a.element} ===")
     log.append(f"    count is conformers out of those used; the distance "
-               f"beside it is the mean over those conformers")
+               f"beside it is the mean closest approach over those conformers")
     log.append(f"  {'compound':10s}{a.element:>4s}{'n':>5s}   "
-               + "   ".join(f"{'residue  n  dist':>18s}" for _ in range(1))
-               + "  (most frequent first)")
+               f"residues, each with the conformers it appears in and its "
+               f"mean closest approach")
     for cpd, (per, n_used) in rows.items():
         for rank, lst in sorted(per.items()):
             tally = defaultdict(list)
-            for r, d in lst:
-                tally[r].append(d)
+            for _, pairs in lst:
+                for r, d in pairs:
+                    tally[r].append(d)
             top = sorted(tally.items(), key=lambda kv: (-len(kv[1]),
                                                         np.mean(kv[1])))
             cells = "  ".join(f"{r:>8s} {len(v):2d} {np.mean(v):4.1f}"
                               for r, v in top[:a.top])
             log.append(f"  {cpd:10s}{rank:4d}{n_used:5d}   {cells}")
+            if len(top) > a.top:
+                log.append(f"  {'':19s}   ... {len(top) - a.top} more residue"
+                           f"(s) seen in fewer conformers")
+
+    if a.per_conformer:
+        log.append("")
+        log.append(f"=== the residues within {a.cutoff:g} A, conformer by "
+                   f"conformer ===")
+        for cpd, (per, n_used) in rows.items():
+            for rank, lst in sorted(per.items()):
+                log.append("")
+                log.append(f"  {cpd} {a.element}{rank}")
+                for rep, pairs in lst:
+                    short = rep.split("_")[-1] if "_" in rep else rep
+                    log.append(f"    {short:6s} "
+                               + ", ".join(f"{r} {d:.1f}" for r, d in pairs)
+                               if pairs else f"    {short:6s} none")
 
     log.append("")
     for cpd, (per, n_used) in rows.items():
         for rank, lst in sorted(per.items()):
             tally = defaultdict(list)
-            for r, d in lst:
-                tally[r].append(d)
+            per_conf = []
+            for _, pairs in lst:
+                per_conf.append(len(pairs))
+                for r, d in pairs:
+                    tally[r].append(d)
+            if not tally:
+                log.append(f"  {cpd} {a.element}{rank}: nothing within "
+                           f"{a.cutoff:g} A in any conformer")
+                continue
             top = sorted(tally.items(), key=lambda kv: -len(kv[1]))[0]
-            frac = len(top[1]) / max(n_used, 1)
-            log.append(f"  {cpd} {a.element}{rank}: nearest {top[0]} in "
-                       f"{len(top[1])} of {n_used} conformers "
-                       f"({100*frac:.0f}%), mean {np.mean(top[1]):.1f} A, "
-                       f"{len(tally)} different residues in all")
-    log.append(f"  a substituent resting in one place shows one large count; "
-               f"one with no fixed environment spreads thin")
+            always = [r for r, v in tally.items() if len(v) == n_used]
+            log.append(f"  {cpd} {a.element}{rank}: "
+                       f"{np.mean(per_conf):.1f} residues within "
+                       f"{a.cutoff:g} A on average, {len(tally)} different "
+                       f"ones in all; most often {top[0]} "
+                       f"({len(top[1])} of {n_used}, mean "
+                       f"{np.mean(top[1]):.1f} A)")
+            if always:
+                log.append(f"  {'':{len(cpd)+len(a.element)+4}s}present in "
+                           f"every conformer: {', '.join(sorted(always))}")
+    log.append(f"  a residue present in every conformer is part of the "
+               f"substituent's environment; one seen a few times is not")
 
     text = "\n".join(log)
     print(text)
