@@ -29,33 +29,55 @@ import argparse, os, re, sys
 import numpy as np
 
 # the component names MMPBSA.py writes, in the order they are reported
-COMPONENTS = ["VDWAALS", "EEL", "EGB", "ESURF", "DELTA G gas",
-              "DELTA G solv", "DELTA TOTAL"]
-SHORT = {"VDWAALS": "VDW", "EEL": "EEL", "EGB": "EGB", "ESURF": "ESURF",
+COMPONENTS = ["VDWAALS", "EEL", "EGB", "EPB", "ESURF", "ENPOLAR", "EDISPER",
+              "DELTA G gas", "DELTA G solv", "DELTA TOTAL"]
+SHORT = {"VDWAALS": "VDW", "EEL": "EEL", "EGB": "EGB", "EPB": "EPB",
+         "ESURF": "ESURF", "ENPOLAR": "ENPOL", "EDISPER": "EDISP",
          "DELTA G gas": "GAS", "DELTA G solv": "SOLV",
          "DELTA TOTAL": "TOTAL"}
 FLOAT = re.compile(r"[-+]?\d+\.\d+(?:[eE][-+]?\d+)?")
 
 
-def parse(path):
-    """The difference section's components. The file also reports the complex,
-    the receptor and the ligand on their own; only their difference is a
-    binding energy, so the others are skipped."""
-    out, started = {}, False
+def parse(path, want_method="GB"):
+    """The difference section's components, from one solvent model.
+
+    A file can hold both the generalized Born and the Poisson-Boltzmann
+    analysis, each with its own difference section. Reading straight through
+    and keeping the last value seen would return whichever came last, under
+    the other one's name. Each method is kept apart here and the one asked
+    for is returned, along with what the file actually held.
+
+    The file also reports the complex, the receptor and the ligand on their
+    own; only their difference is a binding energy, so the rest is skipped.
+    """
+    out, method, started = {}, None, False
     for ln in open(path, errors="replace"):
-        low = ln.strip().lower()
+        st = ln.strip()
+        low = st.lower()
+        if "generalized born" in low:
+            method, started = "GB", False
+            continue
+        if "poisson" in low and "boltzmann" in low:
+            method, started = "PB", False
+            continue
         if low.startswith("differences"):
             started = True
+            continue
+        if low.startswith(("complex:", "receptor:", "ligand:")):
+            started = False
             continue
         if not started:
             continue
         for c in COMPONENTS:
-            if ln.strip().upper().startswith(c.upper()):
-                v = FLOAT.findall(ln)
+            if st.upper().startswith(c.upper()):
+                v = FLOAT.findall(st[len(c):])
                 if v:
-                    out[c] = float(v[0])
+                    out.setdefault(method or "GB", {})[c] = float(v[0])
                 break
-    return out
+    if not out:
+        return {}, []
+    have = sorted(out)
+    return out.get(want_method, out[have[0]]), have
 
 
 def main():
@@ -63,6 +85,12 @@ def main():
     p.add_argument("--system", action="append", required=True,
                    metavar="COMPOUND:SUBUNIT:FILE[,FILE...]",
                    help="several files for one system are replicas")
+    p.add_argument("--method", default="GB",
+                   help="which solvent model to read, GB or PB, where the "
+                        "file holds both")
+    p.add_argument("--verify", action="store_true",
+                   help="print the lines each value was taken from, so the "
+                        "table can be checked against the files by eye")
     p.add_argument("--test-subunit", default="a2")
     p.add_argument("--ref-subunit", default="a1")
     p.add_argument("--test-label", default="")
@@ -73,7 +101,7 @@ def main():
     tl = a.test_label or a.test_subunit
     rl = a.ref_label or a.ref_subunit
 
-    data, order = {}, []
+    data, order, notes = {}, [], []
     for spec in a.system:
         bits = spec.split(":")
         if len(bits) != 3:
@@ -84,9 +112,15 @@ def main():
             f = os.path.expanduser(f.strip())
             if not os.path.exists(f):
                 sys.exit(f"no such file: {f}")
-            d = parse(f)
+            d, have = parse(f, a.method.upper())
             if "DELTA TOTAL" not in d:
                 sys.exit(f"no difference section recognised in {f}")
+            used = a.method.upper() if a.method.upper() in have else have[0]
+            notes.append(f"     {c} {s}: read {used} from "
+                         f"{os.path.basename(f)}"
+                         + (f"   (file also holds "
+                            f"{', '.join(x for x in have if x != used)})"
+                            if len(have) > 1 else ""))
             vals.append(d)
         data[(c, s)] = vals
         if c not in order:
@@ -99,7 +133,7 @@ def main():
            "     these are enthalpy-like: no entropy term is computed, so "
            "they are not free energies",
            "     a value written as mean+-sd is the average over replicas; "
-           "the spread is the yardstick"]
+           "the spread is the yardstick"] + notes
 
     log.append("")
     log.append("=== by system ===")
@@ -180,8 +214,16 @@ def main():
                     g = deltas[y]["DELTA TOTAL"] - deltas[x]["DELTA TOTAL"]
                     verdict = ("clears it" if abs(g) > worst
                                else "inside the spread")
+                    lone = [f"{n} {sub}" for n in (x, y)
+                            for sub in (a.test_subunit, a.ref_subunit)
+                            if len(data.get((n, sub), [1])) == 1]
+                    warn = ("" if not lone else
+                            f"   [but {', '.join(sorted(set(lone)))} "
+                            f"{'has' if len(set(lone)) == 1 else 'have'} no "
+                            f"replicates, so the spread there is unknown and "
+                            f"this verdict is provisional]")
                     log.append(f"    {x} vs {y}: they differ by {g:.2f} on "
-                               f"the preference - {verdict}")
+                               f"the preference - {verdict}{warn}")
     else:
         log.append("=== how much of this is noise ===")
         log.append("    no system has replicates, so nothing here carries an "
@@ -201,6 +243,26 @@ def main():
             where = tl if tot < 0 else rl
             log.append(f"  {c}: prefers {where} by {abs(tot):.2f}   "
                        + ", ".join(f"{SHORT[k]} {v:+.2f}" for k, v in parts))
+
+    if a.verify:
+        log.append("")
+        log.append("=== the lines these numbers came from ===")
+        for spec in a.system:
+            c, sub, fl = (x.strip() for x in spec.split(":"))
+            for f in fl.split(","):
+                f = os.path.expanduser(f.strip())
+                log.append(f"  --- {c} {sub}: {f}")
+                on = False
+                for ln in open(f, errors="replace"):
+                    st, low = ln.rstrip(), ln.strip().lower()
+                    if low.startswith("differences"):
+                        on = True
+                    elif low.startswith(("complex:", "receptor:", "ligand:")):
+                        on = False
+                    if on and (low.startswith("differences") or any(
+                            st.strip().upper().startswith(k.upper())
+                            for k in COMPONENTS)):
+                        log.append(f"      {st}")
 
     text = "\n".join(log)
     print(text)
