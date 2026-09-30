@@ -43,6 +43,12 @@ def main():
                         "give it per receptor as LABEL:N,LABEL:N; one number "
                         "applies to all of them and will mislabel any "
                         "receptor whose offset differs")
+    p.add_argument("--exclude-replicates",
+                   help="comma-separated conformer names, or the bare numbers "
+                        "of a c-suffixed name, to leave out. A conformer whose "
+                        "poses do not share a binding mode with the rest "
+                        "contributes counts that are not comparable with them, "
+                        "and the denominator is reduced to match")
     p.add_argument("--use", choices=["best", "any"], default="best",
                    help="best counts a conformer only when its highest-ranked "
                         "pose makes the bond; any counts it when any kept "
@@ -72,6 +78,25 @@ def main():
         if c not in d.columns:
             sys.exit(f"missing column '{c}'; have: {', '.join(d.columns)}")
     d["residues"] = d["residues"].fillna("")
+
+    if a.exclude_replicates:
+        drop = {x.strip() for x in a.exclude_replicates.split(",") if x.strip()}
+        # a bare number matches the c-suffix of a name like a2_c17
+        nums = {x.lstrip("c").zfill(2) for x in drop if x.lstrip("c").isdigit()}
+        def excluded(rep):
+            r = str(rep)
+            if r in drop:
+                return True
+            tail = r.split("_")[-1]
+            return tail.startswith("c") and tail[1:] in nums
+        mask = d["seed"].map(excluded)
+        gone = sorted(d.loc[mask, "seed"].unique())
+        if not gone:
+            sys.exit(f"--exclude-replicates matched nothing. Conformers "
+                     f"present: {', '.join(sorted(d['seed'].unique())[:8])} ...")
+        d = d[~mask]
+        if not len(d):
+            sys.exit("every conformer was excluded")
 
     # per receptor, the residues asked for
     want = {}
@@ -128,6 +153,10 @@ def main():
 
     log = [f"[in] {a.poses}",
            f"     {d['compound'].nunique()} compounds"]
+    if a.exclude_replicates:
+        log.append(f"     {len(gone)} conformer(s) excluded: "
+                   + ", ".join(gone)
+                   + f"; the counts below are out of the rest")
     if any(off.values()):
         log.append("     printed with an offset per receptor: "
                    + ", ".join(f"{l} {off[l]:+d}" for l in a.receptor
