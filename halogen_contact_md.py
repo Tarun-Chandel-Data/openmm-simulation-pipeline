@@ -91,10 +91,27 @@ def main():
     p.add_argument("--top", required=True)
     p.add_argument("--traj", required=True)
     p.add_argument("--ligand", default="LIG")
-    p.add_argument("--target", required=True,
-                   help="residue in canonical numbering, e.g. LYS69")
+    p.add_argument("--target",
+                   help="residue in canonical numbering, e.g. LYS69. Use "
+                        "--target-index instead where two residues of the "
+                        "same kind sit close together and the numbering is "
+                        "not certain")
+    p.add_argument("--target-index", type=int,
+                   help="the residue's own number in this topology, with no "
+                        "offset applied. This names one residue and nothing "
+                        "else, so it settles which of two nearby lysines is "
+                        "meant")
+    p.add_argument("--list-residues", metavar="FIRST-LAST",
+                   help="print the residues in this range of the topology's "
+                        "own numbering and stop, to find the one you want")
     p.add_argument("--resid-offset", type=int, default=0,
                    help="canonical number minus the number in this file")
+    p.add_argument("--per-target-atom", action="store_true",
+                   help="one row per target atom instead of the nearest of "
+                        "them. An alpha carbon says where the residue is and "
+                        "a side chain tip says what it touches, and the two "
+                        "answer different questions, so a single nearest "
+                        "distance over both would mix them")
     p.add_argument("--target-atoms", default="",
                    help="atom names on the target, e.g. NZ. Default is every "
                         "nitrogen and oxygen it carries")
@@ -118,13 +135,38 @@ def main():
            f"     contact within {a.cutoff * 10:.1f} A, along the C-X axis at "
            f"{a.angle:g} deg or more"]
 
+    if a.list_residues:
+        try:
+            lo, hi = (int(x) for x in a.list_residues.split("-"))
+        except ValueError:
+            sys.exit("--list-residues wants FIRST-LAST, e.g. 55-75")
+        print(f"residues {lo}-{hi} of {a.top}, in this file's own numbering")
+        for r in top.residues:
+            if lo <= r.resSeq <= hi:
+                print(f"  {r.resSeq:5d}  {r.name}")
+        return 0
+    if not a.target and a.target_index is None:
+        sys.exit("give --target or --target-index")
+
     lig = [r for r in top.residues if r.name.upper() == a.ligand.upper()]
     if not lig:
         sys.exit(f"no residue named {a.ligand} in the topology")
     lig = lig[0]
-    tgt = pick_residue(top, a.target, a.resid_offset)
+    if a.target_index is not None:
+        hits = [r for r in top.residues if r.resSeq == a.target_index]
+        if not hits:
+            sys.exit(f"this topology has no residue {a.target_index}")
+        tgt = hits[0]
+    else:
+        tgt = pick_residue(top, a.target, a.resid_offset)
     log.append(f"     ligand {lig.name}{lig.resSeq}, target {tgt.name}"
-               f"{tgt.resSeq + a.resid_offset} (file numbering {tgt.resSeq})")
+               f"{tgt.resSeq} in this file"
+               + (f" ({tgt.name}{tgt.resSeq + a.resid_offset} with the "
+                  f"offset applied)" if a.resid_offset else ""))
+    # name the neighbours, so a residue of the same kind next door is visible
+    near = [f"{r.name}{r.resSeq}" for r in top.residues
+            if 0 < abs(r.resSeq - tgt.resSeq) <= 4]
+    log.append(f"     neighbours in this file: {', '.join(near)}")
 
     if a.target_atoms:
         want = {x.strip().upper() for x in a.target_atoms.split(",")}
@@ -160,29 +202,34 @@ def main():
                    "the ligand RMSD column is left out")
 
     log.append("")
-    log.append(f"=== halogen contact with {a.target} ===")
+    tname = f"{tgt.name}{tgt.resSeq}"
+    log.append(f"=== halogen contact with {tname} ===")
     log.append(f"  {'atom':7s}{'mean':>8s}{'min':>8s}{'within':>9s}"
                f"{'angle':>8s}{'on axis':>9s}   nearest target atom")
     log.append(f"  {'':7s}{'A':>8s}{'A':>8s}{'%':>9s}{'deg':>8s}{'%':>9s}")
     rows = []
-    for h in hal:
-        pairs = np.array([[h, j] for j in tat])
+    sets = ([[j] for j in tat] if a.per_target_atom else [tat])
+    for h, tsel in ((h, ts) for h in hal for ts in sets):
+        tat_use = tsel
+        pairs = np.array([[h, j] for j in tat_use])
         d = md.compute_distances(t, pairs)          # frames x targets, nm
         near = np.argmin(d, axis=1)
         dmin = d[np.arange(len(d)), near] * 10.0    # A
         within = float((dmin <= a.cutoff * 10.0).mean() * 100.0)
         c = bonded_carbon(top, h, t.xyz[0])
+        _ = tat_use
         if c is None:
             ang = np.full(len(dmin), np.nan)
         else:
             ang = angle_at(t.xyz[:, h, :], t.xyz[:, c, :],
-                           t.xyz[np.arange(t.n_frames), [tat[k] for k in near]])
+                           t.xyz[np.arange(t.n_frames),
+                                 [tat_use[k] for k in near]])
         good = ang[~np.isnan(ang)]
         onax = float((good >= a.angle).mean() * 100.0) if len(good) else np.nan
         # which target atom it is closest to most often
         vals, cnt = np.unique(near, return_counts=True)
-        who = top.atom(tat[vals[int(np.argmax(cnt))]]).name
-        name = top.atom(h).name
+        who = top.atom(tat_use[vals[int(np.argmax(cnt))]]).name
+        name = top.atom(h).name + ("-" + who if a.per_target_atom else "")
         log.append(f"  {name:7s}{dmin.mean():8.2f}{dmin.min():8.2f}"
                    f"{within:9.1f}"
                    + (f"{'n/a':>8s}" if not len(good)
