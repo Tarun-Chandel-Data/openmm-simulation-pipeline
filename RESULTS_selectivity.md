@@ -40,25 +40,39 @@ differences in those quantities are not interpreted here.
 Taking ΔΔ = Δ(CK2α′) − Δ(CK2α), so that a negative value denotes a preference
 for CK2α′:
 
-| compound | CK2α′ | CK2α | **ΔΔ** |
-|---|---|---|---|
-| CX-4945 (reference) | −29.95 | −38.78 | **+8.83** |
-| VB004 | −34.14 | −31.48 | **−2.66** |
-| EV043 | −40.86 ± 1.97 | −35.96 | **−4.90** |
+Each compound's two subunits are compared at equal sampling; the frame count
+of every analysis is given, since a difference between subunits is a
+preference only if both sides were sampled alike.
 
-CX-4945 favours CK2α by 8.83 kcal/mol. Both designed compounds favour CK2α′.
-The separation between the reference and either analogue is **11.5–13.7
-kcal/mol**, six to seven times the replica spread, and is the largest effect
-observed in this work.
+| compound | CK2α′ | CK2α | frames | **ΔΔ** |
+|---|---|---|---|---|
+| CX-4945 (reference) | −29.95 | −38.78 | 581 / 581 | **+8.83** |
+| VB004 | −37.97 | −31.48 | 181 / 181 | **−6.49** |
+| EV043 | −42.57 | −35.96 | 181 / 181 | **−6.62** |
 
-VB004 and EV043 differ from each other by 2.24 kcal/mol. This marginally
-exceeds the 1.97 spread, but that spread was measured on EV043 and the VB004
-systems were run once each, so the two analogues are **not** distinguished
-here.
+CX-4945 favours CK2α by 8.83 kcal/mol. Both designed compounds favour CK2α′ by
+about 6.5 kcal/mol. The separation between the reference and either analogue
+is **15.3–15.5 kcal/mol**, roughly eight times the replica spread, and is the
+largest effect observed in this work.
+
+**VB004 and EV043 differ from each other by 0.13 kcal/mol** — far inside the
+replica spread, and consistent with every other method applied. The two
+analogues are equivalent.
+
+Longer analyses exist for the CK2α′ complexes of both analogues (581 and 596
+frames) but not for their CK2α complexes, so they are not used for the
+subunit comparison. Across three CK2α′ replicas of EV043 the total ranges
+from −38.7 to −42.6, which is the basis of the spread quoted above.
 
 ---
 
 ## The reversal is electrostatic in origin and gains a shape term
+
+> **To be regenerated.** The component values below came from an analysis that
+> paired 581-frame CK2α′ replicas against 181-frame CK2α runs for the
+> analogues. The totals above have been corrected to matched pairs; these
+> components have not. The direction of the CX-4945 result is unaffected, as
+> that comparison was matched throughout.
 
 Resolving ΔΔ into its components, with the electrostatic and polar solvation
 terms combined since they largely cancel:
@@ -147,6 +161,9 @@ suggested a difference is the upper end of EV043's own replica range.
   systems would be required before the reversal is stated without
   qualification.
 - No entropy term is included. Absolute values are not binding free energies.
+- The analogues are compared at 181 frames and CX-4945 at 581. Each compound's
+  own subunit comparison is internally matched, which is what ΔΔ requires, but
+  the absolute totals are not comparable across that boundary.
 - CK2α numbering and CK2α′ numbering differ by one residue at equivalent
   positions, and the catalytic lysine is Lys68 in CK2α and Lys69 in CK2α′.
   Topology files and MM-GBSA output additionally differ by one. All residue

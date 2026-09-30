@@ -50,10 +50,14 @@ def parse(path, want_method="GB"):
     The file also reports the complex, the receptor and the ligand on their
     own; only their difference is a binding energy, so the rest is skipped.
     """
-    out, method, started = {}, None, False
+    out, method, started, nframes = {}, None, False, None
     for ln in open(path, errors="replace"):
         st = ln.strip()
         low = st.lower()
+        if nframes is None and "frames" in low:
+            m = re.search(r"([\d.]+)\s+complex frames", low)
+            if m:
+                nframes = int(float(m.group(1)))
         if "generalized born" in low:
             method, started = "GB", False
             continue
@@ -75,9 +79,9 @@ def parse(path, want_method="GB"):
                     out.setdefault(method or "GB", {})[c] = float(v[0])
                 break
     if not out:
-        return {}, []
+        return {}, [], nframes
     have = sorted(out)
-    return out.get(want_method, out[have[0]]), have
+    return out.get(want_method, out[have[0]]), have, nframes
 
 
 def main():
@@ -112,15 +116,17 @@ def main():
             f = os.path.expanduser(f.strip())
             if not os.path.exists(f):
                 sys.exit(f"no such file: {f}")
-            d, have = parse(f, a.method.upper())
+            d, have, nf = parse(f, a.method.upper())
             if "DELTA TOTAL" not in d:
                 sys.exit(f"no difference section recognised in {f}")
             used = a.method.upper() if a.method.upper() in have else have[0]
             notes.append(f"     {c} {s}: read {used} from "
                          f"{os.path.basename(f)}"
+                         + (f", {nf} frames" if nf else ", frames not stated")
                          + (f"   (file also holds "
                             f"{', '.join(x for x in have if x != used)})"
                             if len(have) > 1 else ""))
+            d["_frames"] = nf
             vals.append(d)
         data[(c, s)] = vals
         if c not in order:
@@ -128,6 +134,7 @@ def main():
 
     comps = [c for c in COMPONENTS if any(
         c in v for vs in data.values() for v in vs)]
+    # "_frames" is bookkeeping, never a component
 
     log = ["[in] MM-GBSA binding energies, kcal/mol",
            "     these are enthalpy-like: no entropy term is computed, so "
@@ -160,6 +167,29 @@ def main():
                 line += f"{m:16.2f}"
         log.append(line)
         rows.append(rec)
+
+    bad = []
+    for c in order:
+        t, r = data.get((c, a.test_subunit)), data.get((c, a.ref_subunit))
+        if not t or not r:
+            continue
+        ft = {v.get("_frames") for v in t}
+        fr = {v.get("_frames") for v in r}
+        if None in ft | fr:
+            continue
+        if ft != fr:
+            bad.append((c, sorted(ft), sorted(fr)))
+    if bad:
+        log.append("")
+        log.append("=== UNMATCHED SAMPLING ===")
+        log.append("    a difference between the two subunits is only a "
+                   "preference if both sides were sampled the same way. "
+                   "These were not, and their rows below are not comparable "
+                   "with the rest:")
+        for c, ft, fr in bad:
+            log.append(f"    {c}: {tl} has "
+                       f"{', '.join(str(x) for x in ft)} frames, {rl} has "
+                       f"{', '.join(str(x) for x in fr)}")
 
     log.append("")
     log.append(f"=== isoform preference, {tl} minus {rl} ===")
