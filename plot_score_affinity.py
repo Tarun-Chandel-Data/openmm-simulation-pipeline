@@ -44,6 +44,13 @@ GREY = "#b4b4b4"
 # node validate_palette.js "#d1495b,#7b5cd6,#1b7a4b" --mode light -> all pass,
 # worst adjacent dE 20.2 protan / 23.8 normal
 HILITE = ["#d1495b", "#7b5cd6", "#1b7a4b"]
+# node validate_palette.js "#d1495b,#7b5cd6,#1b7a4b,#2e5eaa" --mode light ->
+# all pass, worst adjacent dE 18.1 deutan / 19.5 normal. Eleven hues cannot
+# pass such a check, so eleven series are carried by four validated colours
+# crossed with three marker shapes: neighbours in the legend differ by colour,
+# and compounds sharing a colour differ by shape.
+SERIES = ["#d1495b", "#7b5cd6", "#1b7a4b", "#2e5eaa"]
+SHAPES = ["o", "s", "^"]
 SURFACE = "#ffffff"
 
 
@@ -157,6 +164,9 @@ def main():
                         "order. Use it where one directory holds the poses of "
                         "more than one receptor")
     p.add_argument("--highlight", default="VB004,EV042,EV043")
+    p.add_argument("--style", choices=("highlight", "all"), default="highlight",
+                   help="'highlight' greys every compound but the few named, "
+                        "'all' gives each compound its own colour and marker")
     p.add_argument("--only", help="restrict to these compounds")
     p.add_argument("--xlim", help="e.g. 0.75,1.0")
     p.add_argument("--ylim",
@@ -178,7 +188,9 @@ def main():
     hl = [x.strip() for x in a.highlight.split(",") if x.strip()]
     keep = ([x.strip() for x in a.only.split(",") if x.strip()]
             if a.only else None)
-    if len(hl) > len(HILITE):
+    if a.style == "all":
+        hl = []
+    if a.style == "highlight" and len(hl) > len(HILITE):
         sys.exit(f"at most {len(HILITE)} compounds can be highlighted; the "
                  f"palette is validated for that many and a fourth hue would "
                  f"not be")
@@ -218,29 +230,44 @@ def main():
     if len(panels) == 1:
         axes = [axes]
 
+    # one style for every compound, fixed by name so a panel missing a
+    # compound does not repaint the others
+    names = sorted({c for _, d in panels for c in d})
+    if a.style == "all":
+        if len(names) > len(SERIES) * len(SHAPES):
+            sys.exit(f"{len(names)} compounds is more than the "
+                     f"{len(SERIES) * len(SHAPES)} colour and shape pairs "
+                     f"available; use --only to cut the set, or --style "
+                     f"highlight")
+        style = {c: (SERIES[i % len(SERIES)], SHAPES[i // len(SERIES)])
+                 for i, c in enumerate(names)}
+    else:
+        style = {c: (HILITE[hl.index(c)], "o") for c in hl if c in names}
+
     for ax, (lab, d) in zip(axes, panels):
-        rest = [c for c in sorted(d) if c not in hl]
-        for c in rest:
+        for c in sorted(d):
+            if c in style:
+                continue
             xs = [p[0] for p in d[c]]
             ys = [p[1] for p in d[c]]
             ax.plot(xs, ys, linestyle="none", marker="o", markersize=2.6,
                     markerfacecolor=GREY, markeredgecolor=SURFACE,
                     markeredgewidth=0.3, alpha=0.75, zorder=2)
-        for i, c in enumerate(hl):
-            if c not in d:
+        for i, c in enumerate(names):
+            if c not in d or c not in style:
                 continue
+            col, mk = style[c]
             xs = [p[0] for p in d[c]]
             ys = [p[1] for p in d[c]]
-            ax.plot(xs, ys, linestyle="none", marker="o", markersize=4.2,
-                    markerfacecolor=HILITE[i], markeredgecolor=SURFACE,
-                    markeredgewidth=0.7, zorder=3 + i)
-        # the count goes inside the axes: as a title it runs into the next
-        # panel's title as soon as the labels are of any length
-        ax.set_title(lab, fontsize=8, color=INK, pad=5)
-        ax.annotate(f"{sum(len(v) for v in d.values())} poses, "
-                    f"{len(d)} compounds", xy=(0.98, 0.02),
-                    xycoords="axes fraction", ha="right", va="bottom",
-                    fontsize=7, color=MUTED)
+            ax.plot(xs, ys, linestyle="none", marker=mk, markersize=4.2,
+                    markerfacecolor=col, markeredgecolor=SURFACE,
+                    markeredgewidth=0.6, zorder=3 + i)
+        # the count sits between the title and the frame: inside the axes it
+        # lands on data points, and in the title it runs into the next panel's
+        ax.set_title(lab, fontsize=8, color=INK, pad=15)
+        ax.text(0.5, 1.012, f"{sum(len(v) for v in d.values())} poses, "
+                            f"{len(d)} compounds", transform=ax.transAxes,
+                ha="center", va="bottom", fontsize=7, color=MUTED)
         ax.set_xlim(xlo, xhi)
         ax.set_ylim(ybot, ytop)          # the less negative value at the top
         ax.xaxis.set_major_locator(MultipleLocator(a.xmajor))
@@ -251,22 +278,27 @@ def main():
         ax.set_xlabel(a.xlabel, color=INK)
     axes[0].set_ylabel(a.ylabel, color=INK)
 
-    handles = [Line2D([], [], linestyle="none", marker="o", markersize=4.2,
-                      markerfacecolor=HILITE[i], markeredgecolor=SURFACE,
-                      markeredgewidth=0.7, label=c)
-               for i, c in enumerate(hl)]
-    handles.append(Line2D([], [], linestyle="none", marker="o",
-                          markersize=2.6, markerfacecolor=GREY,
-                          markeredgecolor=SURFACE, markeredgewidth=0.3,
-                          label="other compounds"))
+    handles = [Line2D([], [], linestyle="none", marker=style[c][1],
+                      markersize=4.2, markerfacecolor=style[c][0],
+                      markeredgecolor=SURFACE, markeredgewidth=0.6, label=c)
+               for c in (hl if a.style == "highlight" else names)
+               if c in style]
+    if any(c not in style for _, d in panels for c in d):
+        handles.append(Line2D([], [], linestyle="none", marker="o",
+                              markersize=2.6, markerfacecolor=GREY,
+                              markeredgecolor=SURFACE, markeredgewidth=0.3,
+                              label="other compounds"))
+    ncol = min(len(handles), 6)
+    rows = -(-len(handles) // ncol)
     fig.tight_layout()
-    # the legend sits below the axis label, not above the data
-    axes_h = fig.subplotpars.top - fig.subplotpars.bottom
-    fig.legend(handles=handles, loc="lower left", frameon=False,
-               ncol=len(handles), fontsize=8, handletextpad=0.4,
+    # the legend hangs from just under the axis label rather than being placed
+    # relative to the axes, so its own number of rows cannot push it into them
+    fig.legend(handles=handles, loc="upper left", frameon=False,
+               ncol=ncol, fontsize=8, handletextpad=0.4,
                columnspacing=1.4, labelcolor=INK,
+               bbox_transform=fig.transFigure,
                bbox_to_anchor=(fig.subplotpars.left,
-                               -0.05 / max(axes_h, 0.6)))
+                               fig.subplotpars.bottom - 0.115))
     for ext in ("png", "pdf"):
         fig.savefig(f"{a.out}.{ext}", dpi=a.dpi, bbox_inches="tight",
                     facecolor=SURFACE)
