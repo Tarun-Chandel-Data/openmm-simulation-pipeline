@@ -131,6 +131,9 @@ for prot in "${prots[@]}"; do
         continue
       fi
       echo "  [$done_n/$total] $lbase seed $seed"
+      # written under a temporary name and renamed once gnina returns, so a
+      # run that is interrupted leaves no half-written file for the resume
+      # check to mistake for a finished one
       "$GNINA" -r "$prot" -l "$lig" \
         --center_x "$CX" --center_y "$CY" --center_z "$CZ" \
         --size_x "$BOX" --size_y "$BOX" --size_z "$BOX" \
@@ -139,8 +142,9 @@ for prot in "${prots[@]}"; do
         --seed "$seed" \
         --exhaustiveness "$EXH" --num_modes "$MODES" \
         --no_gpu --cpu "$CPU" \
-        -o "$out" --log "$log" \
-        || { echo "    gnina failed; see $log" >&2; rm -f "$out"; }
+        -o "$out.part" --log "$log" \
+        && mv -f "$out.part" "$out" \
+        || { echo "    gnina failed; see $log" >&2; rm -f "$out.part"; }
     done
   done
 done
