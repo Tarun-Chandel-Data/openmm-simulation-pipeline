@@ -58,7 +58,7 @@ def cid(path):
     return b.split("__")[0]
 
 
-def points_from_sdf(pattern, xk, yk, selk):
+def points_from_sdf(pattern, xk, yk, selk, match=None):
     """One point per compound per receptor: the best pose that receptor gave."""
     from rdkit import Chem, RDLogger
     RDLogger.DisableLog("rdApp.*")
@@ -82,7 +82,20 @@ def points_from_sdf(pattern, xk, yk, selk):
         files = sorted(glob.glob(pattern, recursive=True))
     if not files:
         sys.exit(f"no pose files under {pattern!r}")
-    print(f"[in] {len(files)} pose files under {pattern}")
+    n0 = len(files)
+    if match:
+        # an ensemble run of two subunits writes both into one place, and a
+        # panel that silently mixes them reports a spread that is mostly the
+        # difference between the subunits
+        rx = re.compile(match)
+        files = [f for f in files if rx.search(os.path.basename(f))]
+        if not files:
+            sys.exit(f"none of the {n0} pose files match {match!r}. A file is "
+                     f"named like EV001__a2c00__a2.sdf, so '__a2$|__a2\\.' "
+                     f"keeps the ones docked into a2")
+    print(f"[in] {len(files)} pose files under {pattern}"
+          + (f"   ({n0 - len(files)} left out by --match {match!r})"
+             if match else ""))
     low = "cnn" not in selk.lower() and any(
         m in selk.lower() for m in ("affinity", "vina", "energy"))
     sign = -1.0 if low else 1.0
@@ -139,6 +152,10 @@ def main():
     p.add_argument("--y", default="minimizedAffinity")
     p.add_argument("--select-by", default="CNNscore",
                    help="property the best pose per receptor is chosen on")
+    p.add_argument("--match", action="append", default=[],
+                   help="regex a pose file name must match, one per panel in "
+                        "order. Use it where one directory holds the poses of "
+                        "more than one receptor")
     p.add_argument("--highlight", default="VB004,EV042,EV043")
     p.add_argument("--only", help="restrict to these compounds")
     p.add_argument("--xlim", help="e.g. 0.75,1.0")
@@ -167,7 +184,7 @@ def main():
                  f"not be")
 
     panels = []
-    for spec in a.panel:
+    for i, spec in enumerate(a.panel):
         if ":" not in spec:
             sys.exit(f"--panel wants LABEL:SOURCE, got {spec!r}")
         lab, src = spec.split(":", 1)
@@ -175,7 +192,8 @@ def main():
         if src.lower().endswith(".csv"):
             d = points_from_csv(src, a.x, a.y)
         else:
-            d = points_from_sdf(src, a.x, a.y, a.select_by)
+            d = points_from_sdf(src, a.x, a.y, a.select_by,
+                                a.match[i] if i < len(a.match) else None)
         if keep:
             d = {k: v for k, v in d.items() if k in keep}
         if not d:
