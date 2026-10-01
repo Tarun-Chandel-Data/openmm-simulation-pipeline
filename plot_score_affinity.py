@@ -71,9 +71,18 @@ def points_from_sdf(pattern, xk, yk, selk):
         except ValueError:
             return np.nan
 
-    files = sorted(glob.glob(pattern))
+    # a directory is taken to mean every pose file under it, at any depth,
+    # so the layout of an ensemble run does not have to be worked out first
+    if os.path.isdir(pattern):
+        files = sorted(glob.glob(os.path.join(pattern, "**", "*.sdf"),
+                                 recursive=True)
+                       + glob.glob(os.path.join(pattern, "**", "*.sdf.gz"),
+                                   recursive=True))
+    else:
+        files = sorted(glob.glob(pattern, recursive=True))
     if not files:
-        sys.exit(f"nothing matched {pattern!r}")
+        sys.exit(f"no pose files under {pattern!r}")
+    print(f"[in] {len(files)} pose files under {pattern}")
     low = "cnn" not in selk.lower() and any(
         m in selk.lower() for m in ("affinity", "vina", "energy"))
     sign = -1.0 if low else 1.0
