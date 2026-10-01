@@ -126,14 +126,20 @@ for prot in "${prots[@]}"; do
       out="$outdir/${lbase}__${pbase}__s${seed}.sdf"
       log="$outdir/${lbase}__${pbase}__s${seed}.log"
       done_n=$(( done_n + 1 ))
-      if [[ -s "$out" ]]; then
+      # a finished sdf ends with the record terminator. Testing for that
+      # rather than for a non-empty file is what tells a completed run from
+      # one that was interrupted part way through writing, and it needs no
+      # temporary file to do it
+      if [[ -s "$out" ]] && tail -3 "$out" 2>/dev/null | grep -q '[$][$][$][$]'; then
         echo "  [$done_n/$total] $lbase seed $seed - already done"
         continue
       fi
+      rm -f "$out"
       echo "  [$done_n/$total] $lbase seed $seed"
-      # written under a temporary name and renamed once gnina returns, so a
-      # run that is interrupted leaves no half-written file for the resume
-      # check to mistake for a finished one
+      # gnina takes the output format from the file extension, so the name
+      # it is given has to end in .sdf; a temporary suffix made it reject the
+      # run with "Invalid format" after the docking had already been done.
+      # Completeness is checked by the terminator above instead
       "$GNINA" -r "$prot" -l "$lig" \
         --center_x "$CX" --center_y "$CY" --center_z "$CZ" \
         --size_x "$BOX" --size_y "$BOX" --size_z "$BOX" \
@@ -142,9 +148,8 @@ for prot in "${prots[@]}"; do
         --seed "$seed" \
         --exhaustiveness "$EXH" --num_modes "$MODES" \
         --no_gpu --cpu "$CPU" \
-        -o "$out.part" --log "$log" \
-        && mv -f "$out.part" "$out" \
-        || { echo "    gnina failed; see $log" >&2; rm -f "$out.part"; }
+        -o "$out" --log "$log" \
+        || { echo "    gnina failed; see $log" >&2; rm -f "$out"; }
     done
   done
 done
