@@ -41,6 +41,7 @@ MODES=10
 SEEDS="1 2 3"
 CPU=20
 CNN_SCORING="rescore"
+CHECK_ONLY="${CHECK_ONLY:-0}"    # CHECK_ONLY=1 reports the boxes and stops
 SORT_BY="CNNscore"             # pose 1 is then the best-scoring pose
 
 # ------------------------------------------------------------------ checks
@@ -115,6 +116,10 @@ for prot in "${prots[@]}"; do
     echo "           solvent; consider adding pocket residues to POCKET_RES."
   fi
 
+  if [[ "$CHECK_ONLY" == "1" ]]; then
+    continue
+  fi
+
   for lig in "${ligs[@]}"; do
     lbase=$(basename "$lig" .mol)
     for seed in $SEEDS; do
@@ -139,6 +144,12 @@ for prot in "${prots[@]}"; do
     done
   done
 done
+
+if [[ "$CHECK_ONLY" == "1" ]]; then
+  echo
+  echo "[check] boxes only; nothing was docked. Unset CHECK_ONLY to run."
+  exit 0
+fi
 
 echo
 echo "[out] $OUT_ROOT/<structure>/<ligand>__<structure>__s<seed>.sdf"
