@@ -107,7 +107,7 @@ def main():
            f"     residues: {', '.join(res)}; best pose of each run by "
            f"{a.select_by}"]
 
-    rows, notes = [], []
+    rows, notes, bad = [], [], []
     for d in dirs:
         sname = os.path.basename(d)
         rec = os.path.join(a.receptors, sname + ".pdb")
@@ -131,7 +131,16 @@ def main():
             if keep and cpd not in keep:
                 continue
             top, tv = None, None
-            for m in Chem.SDMolSupplier(f, removeHs=False, sanitize=True):
+            try:
+                # one unreadable file out of hundreds should be named and
+                # left out, not stop the analysis; a run that was interrupted
+                # or failed leaves exactly such a file
+                supplier = Chem.SDMolSupplier(f, removeHs=False, sanitize=True)
+                mols = list(supplier)
+            except Exception as e:
+                bad.append((f, str(e).split("\n")[0]))
+                continue
+            for m in mols:
                 if m is None:
                     continue
                 v = prop(m, a.select_by)
@@ -140,6 +149,7 @@ def main():
                 if tv is None or v > tv:
                     top, tv = m, v
             if top is None:
+                bad.append((f, "no pose carried " + a.select_by))
                 continue
             try:
                 mh = Chem.AddHs(top, addCoords=True)
@@ -158,6 +168,15 @@ def main():
         sys.exit("no runs read")
     t = pd.DataFrame(rows)
     log += notes
+    if bad:
+        log.append(f"     [note] {len(bad)} of {len(bad) + len(rows)} runs "
+                   f"could not be read and are left out. A compound missing "
+                   f"runs is not comparable with one that has them all, so "
+                   f"re-run these before using the counts:")
+        for f, why in bad[:12]:
+            log.append(f"            {os.path.basename(f)}  -  {why}")
+        if len(bad) > 12:
+            log.append(f"            ... and {len(bad) - 12} more")
 
     nrun = t.groupby("compound").size()
     log.append("")
