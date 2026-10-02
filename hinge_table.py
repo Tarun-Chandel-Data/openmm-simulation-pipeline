@@ -163,13 +163,19 @@ def main():
     log.append("=== top pose, and all poses, per compound and structure ===")
     log.append(f"    'top' columns describe the best pose of each run; "
                f"'all poses' every pose the runs returned")
+    log.append(f"    the hinge columns are either residue, which the backbone "
+               f"contact at {res[1] if len(res) > 1 else res[0]} very nearly "
+               f"saturates; the per-residue columns beside them are what "
+               f"separates the compounds")
     log.append(f"  {'compound':9s}{'structure':11s}"
                f"{'hinge':>8s}{'TYR':>7s}{'ILE':>7s}"
                f"{'score':>8s}{'affinity':>10s}"
-               f"{'hinge':>10s}{'score':>15s}{'affinity':>16s}")
+               f"{'hinge':>10s}{'TYR':>8s}{'ILE':>8s}"
+               f"{'score':>15s}{'affinity':>16s}")
     log.append(f"  {'':9s}{'':11s}{'top':>8s}{'top':>7s}{'top':>7s}"
                f"{'top':>8s}{'top':>10s}"
-               f"{'all poses':>10s}{'mean +- sd':>15s}{'mean +- sd':>16s}")
+               f"{'all poses':>10s}{'poses':>8s}{'poses':>8s}"
+               f"{'mean +- sd':>15s}{'mean +- sd':>16s}")
     rows = []
     for cpd in cpds:
         for st in structs:
@@ -187,6 +193,8 @@ def main():
                     f"{frac(c['top_hb'][res[1]] if len(res) > 1 else 0, n):>7s}"
                     f"{np.mean(c['top_s']):8.3f}{np.mean(c['top_a']):10.2f}"
                     f"{frac(c['either'], np_):>10s}"
+                    f"{frac(c['hb'][res[0]], np_):>8s}"
+                    f"{frac(c['hb'][res[1]] if len(res) > 1 else 0, np_):>8s}"
                     f"{np.mean(s):10.3f} +-{sd(s):4.3f}"
                     f"{np.mean(aff):10.2f} +-{sd(aff):5.2f}")
             log.append(line)
