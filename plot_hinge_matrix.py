@@ -54,6 +54,14 @@ def main():
                         "'hinge' for either of them")
     p.add_argument("--of", choices=("poses", "top"), default="poses",
                    help="over every pose, or the top pose of each run")
+    p.add_argument("--column",
+                   help="a column holding the value itself rather than a "
+                        "count to be divided, for instance an RMSD. --value "
+                        "and --of are then ignored")
+    p.add_argument("--unit", default="%",
+                   help="what the numbers are, for the colour bar")
+    p.add_argument("--decimals", type=int, default=0)
+    p.add_argument("--title", help="replaces the heading built from --value")
     p.add_argument("--only", help="compounds, in the order to draw them")
     p.add_argument("--label", default="")
     p.add_argument("--vmin", type=float,
@@ -68,14 +76,21 @@ def main():
     a = p.parse_args()
 
     t = pd.read_csv(a.table)
-    num = f"{a.of}_{a.value}" if a.value != "hinge" else f"{a.of}_hinge"
-    den = "poses" if a.of == "poses" else "runs"
-    for c in ("compound", "structure", num, den):
-        if c not in t.columns:
-            sys.exit(f"{a.table} has no column {c!r}; it holds "
-                     f"{', '.join(t.columns)}")
-
-    t["pct"] = 100.0 * t[num] / t[den].replace(0, np.nan)
+    if a.column:
+        for c in ("compound", "structure", a.column):
+            if c not in t.columns:
+                sys.exit(f"{a.table} has no column {c!r}; it holds "
+                         f"{', '.join(t.columns)}")
+        t["pct"] = t[a.column].astype(float)
+        den = None
+    else:
+        num = f"{a.of}_{a.value}" if a.value != "hinge" else f"{a.of}_hinge"
+        den = "poses" if a.of == "poses" else "runs"
+        for c in ("compound", "structure", num, den):
+            if c not in t.columns:
+                sys.exit(f"{a.table} has no column {c!r}; it holds "
+                         f"{', '.join(t.columns)}")
+        t["pct"] = 100.0 * t[num] / t[den].replace(0, np.nan)
     cpds = ([x.strip() for x in a.only.split(",") if x.strip()] if a.only
             else sorted(t["compound"].unique()))
     structs = sorted(t["structure"].unique())
@@ -112,15 +127,17 @@ def main():
             v = grid[i, j]
             if np.isnan(v):
                 continue
-            ax.text(j, i, f"{v:.0f}", ha="center", va="center", fontsize=7,
+            ax.text(j, i, f"{v:.{a.decimals}f}", ha="center", va="center",
+                    fontsize=7,
                     color=(SURFACE if v > lo + 0.55 * (hi - lo) else INK))
 
     comp = np.nanmean(grid, axis=1)
     axr.barh(range(len(cpds)), comp, height=0.68, color=BAR,
              edgecolor=SURFACE, linewidth=0.6)
-    axr.set_xlim(0, max(100, float(np.nanmax(comp)) * 1.05))
-    axr.set_xticks([0, 50, 100])
-    axr.set_xticklabels(["0", "50", "100"], color=MUTED, fontsize=7)
+    axr.set_xlim(0, float(np.nanmax(comp)) * 1.12)
+    axr.set_xticks([0, round(float(np.nanmax(comp)), a.decimals)])
+    axr.set_xticklabels(["0", f"{np.nanmax(comp):.{a.decimals}f}"],
+                        color=MUTED, fontsize=7)
     axr.tick_params(labelleft=False)
     for sp in ("top", "right", "left"):
         axr.spines[sp].set_visible(False)
@@ -130,9 +147,10 @@ def main():
     stru = np.nanmean(grid, axis=0)
     axb.bar(range(len(structs)), stru, width=0.68, color=BAR,
             edgecolor=SURFACE, linewidth=0.6)
-    axb.set_ylim(0, max(100, float(np.nanmax(stru)) * 1.05))
-    axb.set_yticks([0, 50, 100])
-    axb.set_yticklabels(["0", "50", "100"], color=MUTED, fontsize=7)
+    axb.set_ylim(0, float(np.nanmax(stru)) * 1.12)
+    axb.set_yticks([0, round(float(np.nanmax(stru)), a.decimals)])
+    axb.set_yticklabels(["0", f"{np.nanmax(stru):.{a.decimals}f}"],
+                        color=MUTED, fontsize=7)
     axb.set_xticks(range(len(structs)))
     axb.set_xticklabels([s.replace("_prep", "").upper() for s in structs],
                         rotation=45, ha="right", color=INK)
@@ -144,35 +162,43 @@ def main():
     # a horizontal label outside the axes is
     axb.set_ylabel("by structure", fontsize=7.5, color=MUTED, labelpad=2)
 
-    what = (f"{a.value} hydrogen bond" if a.value != "hinge"
-            else "hinge hydrogen bond")
-    over = ("across all poses" if a.of == "poses" else "top pose of each run")
-    ax.set_title(f"{a.label + '  ' if a.label else ''}{what}, {over}"
-                 f"   (% of {den})", fontsize=8.5, color=INK, pad=8)
+    if a.title:
+        head = a.title
+    elif a.column:
+        head = f"{a.column.replace('_', ' ')}   ({a.unit})"
+    else:
+        what = (f"{a.value} hydrogen bond" if a.value != "hinge"
+                else "hinge hydrogen bond")
+        over = ("across all poses" if a.of == "poses"
+                else "top pose of each run")
+        head = f"{what}, {over}   (% of {den})"
+    ax.set_title(f"{a.label + '  ' if a.label else ''}{head}",
+                 fontsize=8.5, color=INK, pad=8)
 
     # the colour bar sits under the figure, not over the data
     cax = fig.add_axes([0.13, -0.04, 0.34, 0.025])
     cb = fig.colorbar(im, cax=cax, orientation="horizontal")
     mid = (lo + hi) / 2
     cb.set_ticks([lo, mid, hi])
-    cb.ax.set_xticklabels([f"{lo:.0f}%", f"{mid:.0f}%", f"{hi:.0f}%"],
-                          color=INK, fontsize=7.5)
+    u = a.unit if a.unit != "%" else "%"
+    cb.ax.set_xticklabels([f"{lo:.{a.decimals}f}{u}", f"{mid:.{a.decimals}f}{u}",
+                           f"{hi:.{a.decimals}f}{u}"], color=INK, fontsize=7.5)
     cb.outline.set_visible(False)
     cb.ax.tick_params(length=0, pad=2)
 
     sc = np.nanstd(comp, ddof=1) if len(comp) > 1 else 0.0
     ss = np.nanstd(stru, ddof=1) if len(stru) > 1 else 0.0
-    fig.text(0.52, -0.035, f"spread between compounds {sc:.0f} points; "
-                           f"between structures {ss:.0f} points",
+    fig.text(0.52, -0.035, f"spread between compounds {sc:.{a.decimals + 1}f}; "
+                           f"between structures {ss:.{a.decimals + 1}f}",
              fontsize=7.5, color=MUTED, ha="left", va="center")
 
     for ext in ("png", "pdf"):
         fig.savefig(f"{a.out}.{ext}", dpi=a.dpi, bbox_inches="tight",
                     facecolor=SURFACE)
     print(f"[out] {a.out}.png, {a.out}.pdf   ({a.dpi} dpi)")
-    print(f"  spread between compounds {sc:.1f} points, "
-          f"between structures {ss:.1f} points")
-    print("  " + ", ".join(f"{c} {v:.0f}%" for c, v in
+    print(f"  spread between compounds {sc:.{a.decimals + 1}f}, "
+          f"between structures {ss:.{a.decimals + 1}f}")
+    print("  " + ", ".join(f"{c} {v:.{a.decimals}f}{a.unit}" for c, v in
                            sorted(zip(cpds, comp), key=lambda kv: -kv[1])))
     return 0
 
