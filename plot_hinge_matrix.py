@@ -110,7 +110,11 @@ def main():
     lo = a.vmin if a.vmin is not None else float(np.nanmin(grid))
     hi = a.vmax if a.vmax is not None else float(np.nanmax(grid))
     if hi - lo < 1:
-        lo, hi = max(0.0, lo - 5), min(100.0, hi + 5)
+        # a flat matrix needs some range or every cell takes one colour; the
+        # upper clamp is a percentage's ceiling and does not apply to a count
+        pad = 5 if den is not None else max(0.5, 0.1 * abs(hi))
+        lo = max(0.0, lo - pad)
+        hi = min(100.0, hi + pad) if den is not None else hi + pad
     im = ax.imshow(grid, cmap=RAMP, vmin=lo, vmax=hi, aspect="auto")
     ax.set_xticks(range(len(structs)))
     # the shared x axis puts the labels back if they are cleared by setting

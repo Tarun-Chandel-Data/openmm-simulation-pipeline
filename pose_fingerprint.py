@@ -11,7 +11,11 @@ residues.
 
 Per run, over its N best poses:
 
-  bonds per pose   how many hydrogen bonds a pose makes, and how that varies
+  hydrogen bonds   how many hydrogen bonds the N poses make in total, and how
+                   many of them are to the hinge residues. These are counts of
+                   bonds, which is what the figure draws
+  bonds per pose   the same count divided by the number of poses, kept here
+                   because it is what makes runs of different size comparable
   residues seen    how many distinct residues the poses touch between them
   kept by all      how many are touched by every one of the poses - the part
                    of the binding that does not depend on which pose is read
@@ -128,8 +132,9 @@ def main():
                 except Exception:
                     mh = m
                 hits, _ = bonds_for_pose(mh, sites, a)
-                fps.append((set(k.upper() for k in hits),
-                            int(sum(hits.values()))))
+                up = {k.upper(): v for k, v in hits.items()}
+                fps.append((set(up), int(sum(up.values())),
+                            int(sum(v for k, v in up.items() if k in hi))))
             if fps:
                 runs[(cpd, struct, seed)] = fps
 
@@ -142,10 +147,14 @@ def main():
             key=lambda k: (k[0], k[1])):
         seeds = list(grp)
         nb, seen, kept, agree, conserved = [], [], [], [], []
+        tot, tot_hi, npose = 0, 0, 0
         for k in seeds:
             fps = runs[k]
-            sets = [s for s, _ in fps]
-            nb += [n for _, n in fps]
+            sets = [s for s, _, _ in fps]
+            nb += [n for _, n, _ in fps]
+            tot += sum(n for _, n, _ in fps)
+            tot_hi += sum(n for _, _, n in fps)
+            npose += len(fps)
             union = set().union(*sets)
             inter = set.intersection(*sets) if sets else set()
             seen.append(len(union))
@@ -159,6 +168,11 @@ def main():
         rows.append({
             "compound": cpd, "structure": struct, "seeds": len(seeds),
             "poses": len(nb),
+            # plain counts of hydrogen bonds, which is what the figure draws.
+            # Divided by the number of seeds, so a run repeated three times
+            # does not read as three times the bonding
+            "hbonds": tot / len(seeds) if seeds else np.nan,
+            "hinge_hbonds": tot_hi / len(seeds) if seeds else np.nan,
             "bonds_mean": float(np.mean(nb)) if nb else np.nan,
             "bonds_sd": float(np.std(nb, ddof=1)) if len(nb) > 1 else 0.0,
             "residues_seen": float(np.mean(seen)) if seen else np.nan,
@@ -181,9 +195,12 @@ def main():
     log.append(f"    'kept by all' is the number of residues every one of the "
                f"poses bonds; 'agreement' is how much two poses' residue sets "
                f"overlap, 1 being identical")
-    log.append(f"  {'compound':10s}{'structure':12s}{'bonds/pose':>12s}"
+    log.append(f"  {'compound':10s}{'structure':12s}{'H-bonds':>9s}"
+               f"{'hinge':>8s}{'bonds/pose':>12s}"
                f"{'residues':>10s}{'kept by all':>13s}{'agreement':>11s}"
                f"   residues every pose makes")
+    log.append(f"  {'':10s}{'':12s}{'per seed':>9s}{'/seed':>8s}"
+               f"{'mean +- sd':>12s}")
     for c in order:
         g = t[t.compound == c]
         for st in structs:
@@ -192,13 +209,15 @@ def main():
                 continue
             x = x.iloc[0]
             log.append(f"  {c:10s}{st:12s}"
+                       f"{x['hbonds']:9.1f}{x['hinge_hbonds']:8.1f}"
                        f"{x['bonds_mean']:7.1f} +-{x['bonds_sd']:<4.1f}"
                        f"{x['residues_seen']:10.1f}{x['kept_by_all']:13.1f}"
                        f"{x['agreement']:11.2f}   {x['conserved'] or '-'}")
         log.append("")
 
     log.append("=== by compound ===")
-    log.append(f"  {'compound':10s}{'bonds/pose':>12s}{'agreement':>11s}"
+    log.append(f"  {'compound':10s}{'H-bonds':>9s}{'hinge':>8s}"
+               f"{'bonds/pose':>12s}{'agreement':>11s}"
                f"{'kept by all':>13s}   reading")
     for c in order:
         g = t[t.compound == c]
@@ -208,7 +227,9 @@ def main():
         note = ("the same contacts in every pose" if ag >= 0.75 else
                 "mostly the same contacts" if ag >= 0.5 else
                 "the poses contact different residues")
-        log.append(f"  {c:10s}{g['bonds_mean'].mean():12.1f}{ag:11.2f}"
+        log.append(f"  {c:10s}{g['hbonds'].mean():9.1f}"
+                   f"{g['hinge_hbonds'].mean():8.1f}"
+                   f"{g['bonds_mean'].mean():12.1f}{ag:11.2f}"
                    f"{g['kept_by_all'].mean():13.1f}   {note}")
 
     for r in hi:
