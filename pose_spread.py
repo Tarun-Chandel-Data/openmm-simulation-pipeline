@@ -149,6 +149,7 @@ def main():
         between = [v for v in between if not np.isnan(v)]
         rows.append({
             "compound": cpd, "structure": struct, "seeds": len(seeds),
+            "seed_pairs": len(between),
             "within_mean": np.mean([w[0] for w in within]) if within else np.nan,
             "within_max": np.max([w[1] for w in within]) if within else np.nan,
             "between_mean": np.mean(between) if between else np.nan,
@@ -169,9 +170,11 @@ def main():
     log.append(f"    'within' compares the {a.top_n} poses of one seed with "
                f"each other; 'between' the best pose of each seed with the "
                f"others")
-    log.append(f"  {'compound':10s}{'structure':12s}"
+    log.append(f"  {'compound':10s}{'structure':12s}{'seeds':>6s}"
                f"{'within mean':>13s}{'within max':>12s}"
-               f"{'between mean':>14s}{'between max':>13s}")
+               f"{'pairs':>7s}{'between mean':>14s}{'between max':>13s}")
+    log.append(f"  {'':10s}{'':12s}{'':6s}{'':13s}{'':12s}"
+               f"{'':7s}   (every pair of seeds, not two of them)")
     for c in order:
         g = t[t.compound == c]
         for st in structs:
@@ -179,8 +182,9 @@ def main():
             if not len(x):
                 continue
             x = x.iloc[0]
-            log.append(f"  {c:10s}{st:12s}{x['within_mean']:13.2f}"
-                       f"{x['within_max']:12.2f}{x['between_mean']:14.2f}"
+            log.append(f"  {c:10s}{st:12s}{int(x['seeds']):6d}"
+                       f"{x['within_mean']:13.2f}{x['within_max']:12.2f}"
+                       f"{int(x['seed_pairs']):7d}{x['between_mean']:14.2f}"
                        f"{x['between_max']:13.2f}")
         log.append("")
 
