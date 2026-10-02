@@ -56,6 +56,11 @@ def main():
                    help="over every pose, or the top pose of each run")
     p.add_argument("--only", help="compounds, in the order to draw them")
     p.add_argument("--label", default="")
+    p.add_argument("--vmin", type=float,
+                   help="low end of the colour scale; the data minimum by "
+                        "default, since a scale fixed at zero spends half the "
+                        "ramp on a range the data never reaches")
+    p.add_argument("--vmax", type=float, help="high end; the data maximum")
     p.add_argument("--width", type=float, default=6.4)
     p.add_argument("--height", type=float, default=4.4)
     p.add_argument("--dpi", type=int, default=1000)
@@ -87,7 +92,11 @@ def main():
     axb = fig.add_subplot(gs[1, 0], sharex=ax)
     fig.add_subplot(gs[1, 1]).axis("off")
 
-    im = ax.imshow(grid, cmap=RAMP, vmin=0, vmax=100, aspect="auto")
+    lo = a.vmin if a.vmin is not None else float(np.nanmin(grid))
+    hi = a.vmax if a.vmax is not None else float(np.nanmax(grid))
+    if hi - lo < 1:
+        lo, hi = max(0.0, lo - 5), min(100.0, hi + 5)
+    im = ax.imshow(grid, cmap=RAMP, vmin=lo, vmax=hi, aspect="auto")
     ax.set_xticks(range(len(structs)))
     # the shared x axis puts the labels back if they are cleared by setting
     # them empty, so they are switched off on this axis instead
@@ -104,12 +113,12 @@ def main():
             if np.isnan(v):
                 continue
             ax.text(j, i, f"{v:.0f}", ha="center", va="center", fontsize=7,
-                    color=(SURFACE if v > 55 else INK))
+                    color=(SURFACE if v > lo + 0.55 * (hi - lo) else INK))
 
     comp = np.nanmean(grid, axis=1)
     axr.barh(range(len(cpds)), comp, height=0.68, color=BAR,
              edgecolor=SURFACE, linewidth=0.6)
-    axr.set_xlim(0, 100)
+    axr.set_xlim(0, max(100, float(np.nanmax(comp)) * 1.05))
     axr.set_xticks([0, 50, 100])
     axr.set_xticklabels(["0", "50", "100"], color=MUTED, fontsize=7)
     axr.tick_params(labelleft=False)
@@ -121,7 +130,7 @@ def main():
     stru = np.nanmean(grid, axis=0)
     axb.bar(range(len(structs)), stru, width=0.68, color=BAR,
             edgecolor=SURFACE, linewidth=0.6)
-    axb.set_ylim(0, 100)
+    axb.set_ylim(0, max(100, float(np.nanmax(stru)) * 1.05))
     axb.set_yticks([0, 50, 100])
     axb.set_yticklabels(["0", "50", "100"], color=MUTED, fontsize=7)
     axb.set_xticks(range(len(structs)))
@@ -144,8 +153,10 @@ def main():
     # the colour bar sits under the figure, not over the data
     cax = fig.add_axes([0.13, -0.04, 0.34, 0.025])
     cb = fig.colorbar(im, cax=cax, orientation="horizontal")
-    cb.set_ticks([0, 50, 100])
-    cb.ax.set_xticklabels(["0%", "50%", "100%"], color=INK, fontsize=7.5)
+    mid = (lo + hi) / 2
+    cb.set_ticks([lo, mid, hi])
+    cb.ax.set_xticklabels([f"{lo:.0f}%", f"{mid:.0f}%", f"{hi:.0f}%"],
+                          color=INK, fontsize=7.5)
     cb.outline.set_visible(False)
     cb.ax.tick_params(length=0, pad=2)
 
