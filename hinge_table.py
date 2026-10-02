@@ -66,6 +66,12 @@ def main():
     p.add_argument("--score", default="CNNscore")
     p.add_argument("--affinity", default="minimizedAffinity")
     p.add_argument("--only", help="comma-separated compounds, in order")
+    p.add_argument("--top-n", type=int, default=0,
+                   help="keep only the N best-scoring poses of each run in "
+                        "the all-pose columns. The lower-ranked poses of a "
+                        "run are the ones the search is least confident in, "
+                        "so counting them dilutes the contact with poses "
+                        "nobody would propose. 0 keeps every pose")
     p.add_argument("--dist", type=float, default=3.5)
     p.add_argument("--h-dist", type=float, default=2.5)
     p.add_argument("--angle", type=float, default=120.0)
@@ -111,7 +117,7 @@ def main():
                                     "top_either": 0, "top_s": [], "top_a": [],
                                     "n_pose": 0, "hb": {x: 0 for x in res},
                                     "either": 0, "s": [], "aff": []})
-            best, bs = None, None
+            scored = []
             for m in mols:
                 if m is None:
                     continue
@@ -124,15 +130,18 @@ def main():
                     mh = m
                 hits, _ = bonds_for_pose(mh, sites, a)
                 up = {kk.upper() for kk in hits}
-                fl = {x: (x in up) for x in res}
+                scored.append((sc, af, {x: (x in up) for x in res}))
+            scored.sort(key=lambda r: -r[0])
+            best = (scored[0][2], scored[0][0], scored[0][1]) if scored else None
+            # the all-pose columns describe the best N of the run, since the
+            # poses the search ranks last are the ones it is least sure of
+            for sc, af, fl in (scored[: a.top_n] if a.top_n else scored):
                 c["n_pose"] += 1
                 c["s"].append(sc)
                 c["aff"].append(af)
                 for x in res:
                     c["hb"][x] += int(fl[x])
                 c["either"] += int(any(fl.values()))
-                if bs is None or sc > bs:
-                    best, bs = (fl, sc, af), sc
             if best is None:
                 bad.append((os.path.basename(f), "no pose carried " + a.score))
                 continue
@@ -162,7 +171,8 @@ def main():
     log.append("")
     log.append("=== top pose, and all poses, per compound and structure ===")
     log.append(f"    'top' columns describe the best pose of each run; "
-               f"'all poses' every pose the runs returned")
+               + (f"the pose columns the best {a.top_n} poses of each run"
+                  if a.top_n else "'all poses' every pose the runs returned"))
     log.append(f"    the hinge columns are either residue, which the backbone "
                f"contact at {res[1] if len(res) > 1 else res[0]} very nearly "
                f"saturates; the per-residue columns beside them are what "
