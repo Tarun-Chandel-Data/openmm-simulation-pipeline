@@ -140,27 +140,38 @@ def main():
             except Exception as e:
                 bad.append((f, str(e).split("\n")[0]))
                 continue
+            # every pose is tested, not only the best. A contact the search
+            # finds once and nowhere else is a different thing from one it
+            # finds in most of the poses it returns, and the top pose alone
+            # cannot tell them apart
+            per_pose = []
             for m in mols:
                 if m is None:
                     continue
                 v = prop(m, a.select_by)
                 if np.isnan(v):
                     continue
+                try:
+                    mh = Chem.AddHs(m, addCoords=True)
+                except Exception:
+                    mh = m
+                hits, _ = bonds_for_pose(mh, sites, a)
+                up = {k.upper(): int(hits.get(k2, 0) > 0)
+                      for k2 in hits for k in [k2.upper()]}
+                flags = {x: int(up.get(x, 0) > 0) for x in res}
+                per_pose.append((v, flags))
                 if tv is None or v > tv:
                     top, tv = m, v
-            if top is None:
+            if top is None or not per_pose:
                 bad.append((f, "no pose carried " + a.select_by))
                 continue
-            try:
-                mh = Chem.AddHs(top, addCoords=True)
-            except Exception:
-                mh = top
-            hits, _ = bonds_for_pose(mh, sites, a)
-            up = {k.upper(): v for k, v in hits.items()}
+            best = max(per_pose, key=lambda kv: kv[0])[1]
             r = {"compound": cpd, "structure": struct, "seed": seed,
-                 "score": tv}
+                 "score": tv, "n_pose": len(per_pose)}
             for x in res:
-                r[x] = int(up.get(x, 0) > 0)
+                r[x] = best[x]                                  # the top pose
+                r[x + "_share"] = float(np.mean([f[x] for _, f in per_pose]))
+                r[x + "_any"] = int(any(f[x] for _, f in per_pose))
             r["either"] = int(any(r[x] for x in res))
             r["both"] = int(all(r[x] for x in res))
             rows.append(r)
@@ -206,6 +217,29 @@ def main():
         line += f"{int(bys.sum()):>8d}/{len(bys):<3d}"
         log.append(line)
         summ.append(rec)
+
+    log.append("")
+    log.append("=== across all poses of each run, not only the best ===")
+    log.append(f"    'top' repeats the table above. 'any' is the share of "
+               f"runs where at least one returned pose made the bond, and "
+               f"'per pose' the average share of the poses in a run that did")
+    log.append(f"    the poses of one run come from one search and are not "
+               f"independent of each other, so these describe how consistent "
+               f"a run is; the counting for a test stays at the run level")
+    hdr = f"  {'compound':10s}{'poses':>7s}"
+    for x in res:
+        hdr += f"{x + ' top':>13s}{x + ' any':>13s}{x + ' /pose':>14s}"
+    log.append(hdr)
+    for c in order:
+        g = t[t.compound == c]
+        if not len(g):
+            continue
+        line = f"  {c:10s}{int(g['n_pose'].sum()):7d}"
+        for x in res:
+            line += (f"{g[x].mean() * 100:12.0f}%"
+                     f"{g[x + '_any'].mean() * 100:12.0f}%"
+                     f"{g[x + '_share'].mean() * 100:13.0f}%")
+        log.append(line)
 
     # seeds of the same compound and structure should agree if one run means
     # anything; where they do not, a single-seed study is drawing a coin

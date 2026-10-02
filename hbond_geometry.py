@@ -13,9 +13,14 @@ directional, so geometry is tested here:
       (the atom each polar atom is bonded to must not lie between them)
 
 Ligand hydrogens are added by RDKit with coordinates, so donors on the ligand
-side are explicit. Receptor hydrogens are used when the PDB carries them and
-inferred geometrically when it does not: the antecedent angle is the test that
-does not need them.
+side are explicit and carry the angular test. Receptor hydrogens are NOT read,
+whether or not the PDB holds them: a bond the receptor donates is accepted on
+the heavy-atom distance and the two antecedent angles alone. The two
+directions are therefore not tested equally, and a receptor donor passes on
+looser terms than a ligand one. It matters most for a rotatable hydroxyl -
+serine, threonine, tyrosine - where nothing here constrains which way the
+hydrogen points; for those the criterion amounts to asking whether a ligand
+acceptor sits close and roughly in front of the oxygen.
 
 One pose per compound per receptor: the best by --select-by, not a pool over
 every pose, so the count describes a single binding mode.
