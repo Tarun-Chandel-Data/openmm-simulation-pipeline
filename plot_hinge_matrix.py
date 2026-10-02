@@ -131,8 +131,9 @@ def main():
         axb.spines[sp].set_visible(False)
     for sp in ("bottom", "left"):
         axb.spines[sp].set_color(MUTED)
-    axb.set_ylabel("by\nstructure", fontsize=7.5, color=MUTED,
-                   rotation=0, ha="right", va="center", labelpad=6)
+    # upright, so it cannot be clipped at the left edge of the figure the way
+    # a horizontal label outside the axes is
+    axb.set_ylabel("by structure", fontsize=7.5, color=MUTED, labelpad=2)
 
     what = (f"{a.value} hydrogen bond" if a.value != "hinge"
             else "hinge hydrogen bond")
