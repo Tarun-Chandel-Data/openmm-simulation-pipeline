@@ -189,18 +189,30 @@ def main():
 
     order = keep if keep else sorted(t["compound"].unique())
     structs = sorted(t["structure"].unique())
+    # one pose per run leaves nothing to compare a pose with, so the columns
+    # that describe pose-to-pose agreement are left out rather than printed
+    # as a blank or a one
+    solo = a.top_n == 1
     log.append("")
-    log.append(f"=== the best {a.top_n} poses of each run: how many bonds, "
-               f"and to the same residues? ===")
-    log.append(f"    'kept by all' is the number of residues every one of the "
-               f"poses bonds; 'agreement' is how much two poses' residue sets "
-               f"overlap, 1 being identical")
+    if solo:
+        log.append("=== the top pose of each run: how many hydrogen bonds ===")
+        log.append("    one pose per seed, so these are the bonds of the pose "
+                   "the scoring put first, averaged over the seeds")
+    else:
+        log.append(f"=== the best {a.top_n} poses of each run: how many bonds, "
+                   f"and to the same residues? ===")
+        log.append(f"    'kept by all' is the number of residues every one of "
+                   f"the poses bonds; 'agreement' is how much two poses' "
+                   f"residue sets overlap, 1 being identical")
     log.append(f"  {'compound':10s}{'structure':12s}{'H-bonds':>9s}"
-               f"{'hinge':>8s}{'bonds/pose':>12s}"
-               f"{'residues':>10s}{'kept by all':>13s}{'agreement':>11s}"
-               f"   residues every pose makes")
+               f"{'hinge':>8s}"
+               + ("" if solo else
+                  f"{'bonds/pose':>12s}{'residues':>10s}"
+                  f"{'kept by all':>13s}{'agreement':>11s}")
+               + ("   residues bonded" if solo
+                  else "   residues every pose makes"))
     log.append(f"  {'':10s}{'':12s}{'per seed':>9s}{'/seed':>8s}"
-               f"{'mean +- sd':>12s}")
+               + ("" if solo else f"{'mean +- sd':>12s}"))
     for c in order:
         g = t[t.compound == c]
         for st in structs:
@@ -210,34 +222,41 @@ def main():
             x = x.iloc[0]
             log.append(f"  {c:10s}{st:12s}"
                        f"{x['hbonds']:9.1f}{x['hinge_hbonds']:8.1f}"
-                       f"{x['bonds_mean']:7.1f} +-{x['bonds_sd']:<4.1f}"
-                       f"{x['residues_seen']:10.1f}{x['kept_by_all']:13.1f}"
-                       f"{x['agreement']:11.2f}   {x['conserved'] or '-'}")
+                       + ("" if solo else
+                          f"{x['bonds_mean']:7.1f} +-{x['bonds_sd']:<4.1f}"
+                          f"{x['residues_seen']:10.1f}"
+                          f"{x['kept_by_all']:13.1f}{x['agreement']:11.2f}")
+                       + f"   {x['conserved'] or '-'}")
         log.append("")
 
     log.append("=== by compound ===")
     log.append(f"  {'compound':10s}{'H-bonds':>9s}{'hinge':>8s}"
-               f"{'bonds/pose':>12s}{'agreement':>11s}"
-               f"{'kept by all':>13s}   reading")
+               + ("" if solo else
+                  f"{'bonds/pose':>12s}{'agreement':>11s}"
+                  f"{'kept by all':>13s}   reading"))
     for c in order:
         g = t[t.compound == c]
         if not len(g):
             continue
-        ag = g["agreement"].mean()
-        note = ("the same contacts in every pose" if ag >= 0.75 else
-                "mostly the same contacts" if ag >= 0.5 else
-                "the poses contact different residues")
-        log.append(f"  {c:10s}{g['hbonds'].mean():9.1f}"
-                   f"{g['hinge_hbonds'].mean():8.1f}"
-                   f"{g['bonds_mean'].mean():12.1f}{ag:11.2f}"
-                   f"{g['kept_by_all'].mean():13.1f}   {note}")
+        line = (f"  {c:10s}{g['hbonds'].mean():9.1f}"
+                f"{g['hinge_hbonds'].mean():8.1f}")
+        if not solo:
+            ag = g["agreement"].mean()
+            note = ("the same contacts in every pose" if ag >= 0.75 else
+                    "mostly the same contacts" if ag >= 0.5 else
+                    "the poses contact different residues")
+            line += (f"{g['bonds_mean'].mean():12.1f}{ag:11.2f}"
+                     f"{g['kept_by_all'].mean():13.1f}   {note}")
+        log.append(line)
 
     for r in hi:
         held = t["conserved"].str.contains(r, na=False)
         log.append("")
-        log.append(f"  {r} is bonded by every one of the best {a.top_n} poses "
-                   f"in {int(held.sum())} of {len(t)} compound-structure "
-                   f"pairs")
+        log.append(f"  {r} is bonded by "
+                   + ("the top pose of every seed" if solo else
+                      f"every one of the best {a.top_n} poses")
+                   + f" in {int(held.sum())} of {len(t)} compound-structure "
+                     f"pairs")
         if held.any():
             who = (t[held].groupby("compound").size()
                    .sort_values(ascending=False))
