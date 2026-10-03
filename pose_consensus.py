@@ -90,6 +90,18 @@ def main():
                         "each pose of the first seed and takes the nearest "
                         "pose in every other seed, instead of trying every "
                         "combination")
+    p.add_argument("--pick", choices=("anchor", "rank", "min"),
+                   default="anchor",
+                   help="how the matching poses are chosen. 'anchor' takes "
+                        "every pose of every seed in turn, finds the pose "
+                        "nearest to it in each of the other seeds, and keeps "
+                        "whichever anchor gives the closest set. 'rank' takes "
+                        "the earliest-ranked set that agrees within the "
+                        "threshold. 'min' takes the closest set of any ranks")
+    p.add_argument("--score", choices=("max", "mean"), default="max",
+                   help="a set's distance: the worst of its three seed pairs, "
+                        "or their mean. The worst is the stricter, since one "
+                        "disagreeing seed means the three did not agree")
     p.add_argument("--dump", metavar="COMPOUND:STRUCTURE",
                    help="print the whole pose-by-pose table for one cell, "
                         "every seed pair, and stop. Nothing here should be "
@@ -191,7 +203,9 @@ def main():
 
         def worst(pick):
             v = [q for _, _, q in pairs_of(pick)]
-            return np.nan if any(np.isnan(q) for q in v) else max(v)
+            if any(np.isnan(q) for q in v):
+                return np.nan
+            return max(v) if a.score == "max" else float(np.mean(v))
 
         # The pose wanted is the earliest-ranked one the seeds agree on, not
         # the one they agree on most closely. Those are different: a run can
@@ -200,9 +214,38 @@ def main():
         # failed when it did not. So among the combinations that agree within
         # the threshold, the one with the lowest ranks is taken, and the
         # distance is whatever that combination gives.
+        def nearest(i, x, j):
+            """The pose of seed j closest to pose x of seed i."""
+            col = (D[(i, j)][x] if i < j else D[(j, i)][:, x])
+            return (None if np.all(np.isnan(col))
+                    else int(np.nanargmin(col)))
+
         combos = int(np.prod(n))
         best_pick, floor_pick, floor = None, None, np.inf
-        if combos <= a.max_combos:
+        if a.pick == "anchor":
+            # every pose of every seed is tried as the anchor; against each,
+            # the nearest pose in each other seed is taken, and the anchor
+            # whose set holds together best is kept
+            for i in range(len(seeds)):
+                for x in range(n[i]):
+                    pick = [None] * len(seeds)
+                    pick[i] = x
+                    ok = True
+                    for j in range(len(seeds)):
+                        if j == i:
+                            continue
+                        y = nearest(i, x, j)
+                        if y is None:
+                            ok = False
+                            break
+                        pick[j] = y
+                    if not ok:
+                        continue
+                    w = worst(tuple(pick))
+                    if not np.isnan(w) and w < floor:
+                        floor, floor_pick = w, tuple(pick)
+            best_pick = floor_pick
+        elif combos <= a.max_combos:
             for pick in itertools.product(*[range(x) for x in n]):
                 w = worst(pick)
                 if np.isnan(w):
@@ -237,7 +280,11 @@ def main():
                     if not np.isnan(w) and w <= a.threshold:
                         best_pick = tuple(pick)
                         break
-        converged = best_pick is not None
+        if a.pick == "min":
+            best_pick = floor_pick
+        converged = (best_pick is not None
+                     and np.isfinite(worst(best_pick))
+                     and worst(best_pick) <= a.threshold)
         if best_pick is None:
             best_pick = floor_pick
         best = worst(best_pick) if best_pick else np.nan
@@ -272,11 +319,16 @@ def main():
         sys.exit("no compound-structure cell had two or more seeds")
     t = pd.DataFrame(rows)
 
+    how = {"anchor": "every pose of every seed tried as the anchor, the "
+                     "nearest pose in each other seed taken with it",
+           "rank": "the earliest-ranked set that agrees within the threshold",
+           "min": "the closest set, at any ranks"}[a.pick]
     log = [f"[in] {len(run)} runs, "
            + ("every pose" if not a.top_n else f"the best {a.top_n} poses")
            + " of each",
-           f"     every pose compared with every pose of the other seeds; the "
-           f"combination that agrees best is kept",
+           f"     every pose compared with every pose of the other seeds; "
+           f"{how}",
+           f"     a set's distance is the {a.score} of its seed pairs",
            f"     symmetry-aware RMSD in place, no superposition"]
     if bad:
         log.append(f"     [note] {len(bad)} files not read")
@@ -285,10 +337,7 @@ def main():
     structs = sorted(t["structure"].unique())
     log.append("")
     log.append("=== did the seeds find the same pose, at any rank? (A) ===")
-    log.append(f"    the earliest-ranked combination whose seeds all agree "
-               f"within {a.threshold} A is taken, not the closest one: what "
-               f"is asked is how far down the list the agreement is, so a "
-               f"nearer match at a worse rank must not displace it")
+    log.append(f"    {how}")
     log.append("    'agree' is the worst pairwise distance inside that "
                "combination; 'closest' is the best any combination reaches, "
                "whatever its rank")
