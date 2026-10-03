@@ -12,6 +12,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 mkdir -p "$work"/{par,rec,poses/a2_c00}
+printf 'ATOM      1  N   TYR A 110       0.000   0.000   0.000  1.00  0.00           N\nEND\n' > "$work/rec/a2_c00.pdb"
 python3 - "$work" <<'PY'
 import sys
 from rdkit import Chem
@@ -38,9 +39,12 @@ out="$(PATH="$here/stub_amber:$PATH" python3 "$root/mmgbsa_ensemble.py" \
 rc=$?
 echo "$out"
 fail=0
-[[ $rc -eq 0 ]] || { echo "FAIL: exit $rc"; fail=1; }
+# the stubs write no topology, so the trial must stop and say so
+grep -q "the trial complex failed" <<< "$out" || { echo "FAIL: trial failure not reported"; fail=1; }
 grep -q "same atoms in the same order" <<< "$out" || { echo "FAIL: atom order not checked"; fail=1; }
 grep -q "igb=2" <<< "$out" || { echo "FAIL: protocol not reported"; fail=1; }
+grep -q "hold 1 protein atoms" <<< "$out" || { echo "FAIL: members not compared"; fail=1; }
+grep -q "trial" <<< "$out" || { echo "FAIL: no trial complex attempted"; fail=1; }
 grep -qi "traceback" <<< "$out" && { echo "FAIL: it crashed"; fail=1; }
 [[ $fail -eq 0 ]] && echo "PASS"
 exit $fail

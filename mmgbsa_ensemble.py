@@ -26,7 +26,7 @@ one complex than on four hundred.
 """
 import argparse, os, shutil, subprocess, sys, glob, textwrap
 
-NEEDED = ["tleap", "sander", "MMPBSA.py"]
+NEEDED = ["tleap", "sander", "cpptraj", "MMPBSA.py"]
 
 
 def say(tag, msg):
@@ -251,6 +251,212 @@ def preflight(a):
     return bad, cpds, params
 
 
+def heavy_from_mol2(path):
+    atoms, err = read_mol2_atoms(path)
+    if err:
+        return None, err
+    return [(n, e) for n, e in atoms if e != "H"], None
+
+
+def pose_heavy_coords(path, select_by):
+    """Heavy-atom coordinates of the best-scoring pose, in file order."""
+    try:
+        from rdkit import Chem, RDLogger
+        RDLogger.DisableLog("rdApp.*")
+    except ImportError:
+        return None, "needs rdkit"
+    try:
+        mols = [m for m in Chem.SDMolSupplier(path, removeHs=False,
+                                              sanitize=False) if m is not None]
+    except Exception as e:                                    # noqa: BLE001
+        return None, f"{path}: {e}"
+    if not mols:
+        return None, f"{path}: no poses"
+    best, bv = mols[0], None
+    for m in mols:
+        if m.HasProp(select_by):
+            try:
+                v = float(m.GetProp(select_by))
+            except ValueError:
+                continue
+            if bv is None or v > bv:
+                best, bv = m, v
+    conf = best.GetConformer()
+    out = []
+    for at in best.GetAtoms():
+        if at.GetSymbol().upper() == "H":
+            continue
+        p = conf.GetAtomPosition(at.GetIdx())
+        out.append((p.x, p.y, p.z))
+    return out, None
+
+
+def write_lig_pdb(path, names, coords):
+    """One LIG residue, heavy atoms only; tleap builds the rest from the lib."""
+    with open(path, "w") as f:
+        for i, (nm, (x, y, z)) in enumerate(zip(names, coords), 1):
+            f.write(f"ATOM  {i:5d} {nm:<4s}LIG A   1    "
+                    f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00\n")
+        f.write("TER\nEND\n")
+
+
+def write_receptor_pdb(src, dst):
+    """Protein only: no waters, ions, other heteroatoms or hydrogens.
+
+    Hydrogens are left to tleap so their names are the force field's own;
+    a PDB's hydrogen names often are not, and tleap then builds duplicates
+    or refuses the residue."""
+    drop = {"HOH", "WAT", "NA", "CL", "K", "MG", "ZN", "SO4", "PO4", "EDO",
+            "GOL", "LIG", "UNL", "UNK"}
+    n = 0
+    try:
+        with open(src) as f, open(dst, "w") as o:
+            for line in f:
+                if not line.startswith("ATOM"):
+                    continue
+                if line[17:20].strip().upper() in drop:
+                    continue
+                el = line[76:78].strip().upper()
+                nm = line[12:16].strip()
+                if el == "H" or (not el and nm[:1] == "H"):
+                    continue
+                o.write(line)
+                n += 1
+            o.write("TER\nEND\n")
+    except OSError as e:
+        return 0, f"{src}: {e}"
+    return n, None if n else f"{src}: no protein atoms kept"
+
+
+LEAP = """source {pff}
+source {lff}
+loadamberparams {frcmod}
+loadoff {lib}
+rec = loadpdb rec.pdb
+lig = loadpdb lig.pdb
+com = combine {{ rec lig }}
+saveamberparm com com.prmtop com.inpcrd
+saveamberparm rec rec.prmtop rec.inpcrd
+saveamberparm lig lig.prmtop lig.inpcrd
+quit
+"""
+
+MIN = """minimise, receptor restrained so the docked pose is relaxed not replaced
+ &cntrl
+  imin=1, maxcyc={steps}, ncyc={ncyc},
+  ntb=0, igb={igb}, saltcon={salt}, cut=999.0,
+  ntr=1, restraint_wt={wt}, restraintmask='!:LIG & !@H=',
+  ntpr=100,
+ /
+"""
+
+MMPBSA_IN = """single point on the minimised complex
+&general
+   startframe=1, endframe=1, interval=1, verbose=2, keep_files=0,
+/
+&gb
+   igb={igb}, saltcon={salt},
+/
+"""
+
+
+def parse_total(path):
+    """DELTA TOTAL from a FINAL_RESULTS file, with its standard deviation."""
+    try:
+        lines = open(path).read().splitlines()
+    except OSError as e:
+        return None, f"{path}: {e}"
+    seen = None
+    for i, line in enumerate(lines):
+        if line.strip().upper().startswith("DELTA TOTAL"):
+            nums = []
+            for tok in line.replace("DELTA TOTAL", "").split():
+                try:
+                    nums.append(float(tok))
+                except ValueError:
+                    pass
+            if nums:
+                seen = (nums[0], nums[1] if len(nums) > 1 else 0.0)
+    if seen is None:
+        return None, f"{path}: no DELTA TOTAL line"
+    return seen, None
+
+
+def one_complex(job):
+    """Build, minimise and evaluate one complex. Never raises."""
+    (cpd, struct, pose, rec_src, lig_dir, out_json, work, a_d) = job
+    import json
+    env = dict(os.environ)
+    env["CUDA_VISIBLE_DEVICES"] = ""
+    env["OMP_NUM_THREADS"] = "1"
+    tag = f"{cpd}/{struct}"
+    try:
+        os.makedirs(work, exist_ok=True)
+        heavy, err = heavy_from_mol2(os.path.join(lig_dir, "LIG.mol2"))
+        if err:
+            return tag, None, err
+        coords, err = pose_heavy_coords(pose, a_d["select_by"])
+        if err:
+            return tag, None, err
+        if len(coords) != len(heavy):
+            return tag, None, (f"{len(coords)} heavy atoms in the pose, "
+                               f"{len(heavy)} in LIG.mol2")
+        write_lig_pdb(os.path.join(work, "lig.pdb"),
+                      [n for n, _ in heavy], coords)
+        n, err = write_receptor_pdb(rec_src, os.path.join(work, "rec.pdb"))
+        if err:
+            return tag, None, err
+
+        open(os.path.join(work, "leap.in"), "w").write(LEAP.format(
+            pff=a_d["protein_ff"], lff=a_d["ligand_ff"],
+            frcmod=os.path.join(lig_dir, "LIG.frcmod"),
+            lib=os.path.join(lig_dir, "LIG.lib")))
+        ok, out = run(["tleap", "-f", "leap.in"], env, cwd=work,
+                      log=os.path.join(work, "leap.log"))
+        for f in ("com.prmtop", "rec.prmtop", "lig.prmtop", "com.inpcrd"):
+            if not os.path.exists(os.path.join(work, f)):
+                tail = "\n".join(out.splitlines()[-6:])
+                return tag, None, f"tleap made no {f}; last lines:\n{tail}"
+
+        open(os.path.join(work, "min.in"), "w").write(MIN.format(
+            steps=a_d["min_steps"], ncyc=max(50, a_d["min_steps"] // 3),
+            igb=a_d["igb"], salt=a_d["salt"], wt=a_d["restraint"]))
+        ok, out = run(["sander", "-O", "-i", "min.in", "-p", "com.prmtop",
+                       "-c", "com.inpcrd", "-ref", "com.inpcrd",
+                       "-r", "min.rst", "-o", "min.out"], env, cwd=work,
+                      timeout=3600)
+        if not os.path.exists(os.path.join(work, "min.rst")):
+            tail = "\n".join(out.splitlines()[-6:])
+            return tag, None, f"minimisation wrote no restart:\n{tail}"
+
+        open(os.path.join(work, "traj.in"), "w").write(
+            "parm com.prmtop\ntrajin min.rst\n"
+            "trajout traj.mdcrd mdcrd\ngo\nquit\n")
+        ok, out = run(["cpptraj", "-i", "traj.in"], env, cwd=work,
+                      log=os.path.join(work, "cpptraj.log"))
+        if not os.path.exists(os.path.join(work, "traj.mdcrd")):
+            return tag, None, "cpptraj wrote no trajectory"
+
+        open(os.path.join(work, "mmpbsa.in"), "w").write(
+            MMPBSA_IN.format(igb=a_d["igb"], salt=a_d["salt"]))
+        ok, out = run(["MMPBSA.py", "-O", "-i", "mmpbsa.in", "-o", "FINAL.dat",
+                       "-cp", "com.prmtop", "-rp", "rec.prmtop",
+                       "-lp", "lig.prmtop", "-y", "traj.mdcrd"], env, cwd=work,
+                      log=os.path.join(work, "mmpbsa.log"), timeout=3600)
+        res, err = parse_total(os.path.join(work, "FINAL.dat"))
+        if err:
+            tail = "\n".join(out.splitlines()[-8:])
+            return tag, None, f"{err}\n{tail}"
+        rec = {"compound": cpd, "structure": struct, "dG": res[0],
+               "sd": res[1], "pose": pose}
+        os.makedirs(os.path.dirname(out_json), exist_ok=True)
+        with open(out_json, "w") as f:
+            json.dump(rec, f)
+        return tag, rec, None
+    except Exception as e:                                    # noqa: BLE001
+        return tag, None, f"unexpected: {type(e).__name__}: {e}"
+
+
 def main():
     p = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -336,10 +542,134 @@ def main():
 
     say("ok", f"protocol: {a.protein_ff}, {a.ligand_ff}, igb={a.igb}, "
               f"saltcon={a.salt}")
-    say("next", "the checks above pass. The trial complex and the run itself "
-                "are not built yet - send this output together with the "
-                "tleap.in used for the simulations, so the complex is built "
-                "the same way, and they will be")
+
+    # every ensemble member must hold the same protein, or one topology
+    # cannot stand for all of them and the numbers are not comparable
+    counts = {}
+    for d in structs:
+        sn = os.path.basename(d)
+        rec = os.path.join(a.receptors, sn + ".pdb")
+        if not os.path.exists(rec):
+            hits = glob.glob(os.path.join(a.receptors, sn + "*.pdb"))
+            if not hits:
+                say("STOP", f"no receptor for {sn} in {a.receptors}")
+                return 1
+            rec = hits[0]
+        counts[sn] = (rec, sum(1 for ln in open(rec)
+                               if ln.startswith("ATOM")))
+    n = {v[1] for v in counts.values()}
+    if len(n) > 1:
+        lo, hi = min(n), max(n)
+        say("STOP", f"the ensemble members do not hold the same protein: "
+                    f"{lo} to {hi} atoms across {len(counts)} files")
+        return 1
+    say("ok", f"all {len(counts)} members hold {n.pop()} protein atoms")
+
+    a_d = {"select_by": a.select_by, "protein_ff": a.protein_ff,
+           "ligand_ff": a.ligand_ff, "igb": a.igb, "salt": a.salt,
+           "min_steps": a.min_steps, "restraint": a.restraint}
+
+    jobs, done = [], 0
+    for c in cpds:
+        for sn, (rec, _) in sorted(counts.items()):
+            hits = sorted(glob.glob(os.path.join(a.poses, sn,
+                                                 f"{c}__*.sdf")))
+            if not hits:
+                continue
+            oj = os.path.join(a.out, "cells", f"{c}__{sn}.json")
+            if os.path.exists(oj):
+                done += 1
+                continue
+            jobs.append((c, sn, hits[0], rec, params[c], oj,
+                         os.path.join(a.out, "work", f"{c}__{sn}"), a_d))
+    say("ok", f"{len(jobs)} complexes to do, {done} already finished")
+    if not jobs and not done:
+        say("STOP", "no complex matched a compound and a receptor")
+        return 1
+
+    # one complex first, always, run or no run: this pipeline fails at its
+    # joins and one is cheaper to debug than four hundred
+    if jobs:
+        say("trial", f"building {jobs[0][0]} in {jobs[0][1]} ...")
+        tag, rec, err = one_complex(jobs[0])
+        if err:
+            say("STOP", f"the trial complex failed: {tag}")
+            for ln in str(err).splitlines():
+                say("STOP", f"  {ln}")
+            say("STOP", f"its working files are in {jobs[0][6]} - nothing "
+                        f"else was run")
+            return 1
+        say("trial", f"{tag}: dG = {rec['dG']:.2f} kcal/mol")
+        if not (-200 < rec["dG"] < 50):
+            say("STOP", f"that is not a plausible value; stopping before "
+                        f"the rest. Working files in {jobs[0][6]}")
+            return 1
+        jobs = jobs[1:]
+
+    if not a.run:
+        say("done", "the trial worked. Add --run to do the remaining "
+                    f"{len(jobs)}")
+        return 0
+
+    if jobs:
+        import multiprocessing as mp
+        say("run", f"{len(jobs)} complexes on {a.np} workers")
+        nfail = 0
+        try:
+            with mp.Pool(a.np, initializer=os.nice, initargs=(19,)) as pool:
+                for i, (tag, rec, err) in enumerate(
+                        pool.imap_unordered(one_complex, jobs), 1):
+                    if err:
+                        nfail += 1
+                        say("fail", f"[{i}/{len(jobs)}] {tag}: "
+                                    f"{str(err).splitlines()[0]}")
+                    else:
+                        say("ok", f"[{i}/{len(jobs)}] {tag}: "
+                                  f"{rec['dG']:.2f}")
+        except KeyboardInterrupt:
+            say("stop", "interrupted; finished cells are kept and a rerun "
+                        "will skip them")
+            return 1
+        if nfail:
+            say("note", f"{nfail} of {len(jobs)} failed; their working files "
+                        f"are under {os.path.join(a.out, 'work')}")
+
+    # gather
+    import json
+    rows = []
+    for f in sorted(glob.glob(os.path.join(a.out, "cells", "*.json"))):
+        try:
+            rows.append(json.load(open(f)))
+        except (OSError, ValueError):
+            pass
+    if not rows:
+        say("STOP", "nothing to summarise")
+        return 1
+    say("", "")
+    say("out", f"=== single-point MM-GBSA, igb={a.igb}, mean over the "
+               f"ensemble ===")
+    say("out", f"  {'compound':10s}{'members':>9s}{'dG mean':>10s}"
+               f"{'sd':>8s}{'min':>9s}{'max':>9s}")
+    import statistics as st
+    for c in cpds:
+        v = [r["dG"] for r in rows if r["compound"] == c]
+        if not v:
+            continue
+        sd = st.stdev(v) if len(v) > 1 else 0.0
+        say("out", f"  {c:10s}{len(v):9d}{st.mean(v):10.2f}{sd:8.2f}"
+                   f"{min(v):9.2f}{max(v):9.2f}")
+    say("out", "  no entropy, so these compare with each other and are not "
+               "binding free energies")
+    try:
+        import csv
+        with open(os.path.join(a.out, "cells.csv"), "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["compound", "structure", "dG",
+                                              "sd", "pose"])
+            w.writeheader()
+            w.writerows(rows)
+        say("out", f"{os.path.join(a.out, 'cells.csv')}")
+    except OSError as e:
+        say("note", f"could not write the csv: {e}")
     return 0
 
 

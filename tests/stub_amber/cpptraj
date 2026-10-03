@@ -1,0 +1,4 @@
+#!/bin/sh
+# stands in for amber so the checks can be exercised where it is absent
+echo "stub cpptraj $*"
+exit 0
