@@ -34,6 +34,14 @@ try:
     import pandas as pd
 except ImportError:
     sys.exit("needs pandas")
+
+_here = os.path.dirname(os.path.abspath(__file__))
+if _here not in sys.path:
+    sys.path.insert(0, _here)
+try:
+    from hbond_geometry import polar_sites, bonds_for_pose
+except ImportError:
+    polar_sites = bonds_for_pose = None
 try:
     from rdkit import Chem, RDLogger
     from rdkit.Chem import rdMolAlign
@@ -107,6 +115,18 @@ def main():
                         "every seed pair, and stop. Nothing here should be "
                         "taken on trust: this is the table the choice is made "
                         "from")
+    p.add_argument("--receptors",
+                   help="directory of receptor .pdb files, named after the "
+                        "structure directories. With it, the poses the seeds "
+                        "agreed on are tested for hydrogen bonds")
+    p.add_argument("--hbond-residues", default="ILE,TYR",
+                   help="residue names to look for, by name and not by "
+                        "number, since every structure numbers them "
+                        "differently")
+    p.add_argument("--dist", type=float, default=3.5)
+    p.add_argument("--h-dist", type=float, default=2.5)
+    p.add_argument("--angle", type=float, default=120.0)
+    p.add_argument("--antecedent-angle", type=float, default=90.0)
     p.add_argument("--drift-cut", type=float, default=12.0,
                    help="a pose whose centroid sits this far from the median "
                         "centroid of its cell is reported. Poses that left "
@@ -157,6 +177,22 @@ def main():
             return float(rdMolAlign.CalcRMS(m1, m2))
         except Exception:
             return np.nan
+
+    names = [x.strip().upper() for x in a.hbond_residues.split(",")
+             if x.strip()]
+    sites = {}
+    if a.receptors:
+        if polar_sites is None:
+            sys.exit("--receptors needs hbond_geometry.py beside this script")
+        for d in dirs:
+            sn = os.path.basename(d)
+            rec = os.path.join(a.receptors, sn + ".pdb")
+            if not os.path.exists(rec):
+                cand = glob.glob(os.path.join(a.receptors, sn + "*.pdb"))
+                if not cand:
+                    continue
+                rec = cand[0]
+            sites[sn] = polar_sites(rec)
 
     want = None
     if a.dump:
@@ -310,6 +346,26 @@ def main():
                for ps in pose for x in ps]
         med = np.median(np.vstack(cen), axis=0)
         drift = [float(np.linalg.norm(c - med)) for c in cen]
+        # the agreed pose, tested against its own receptor. Residues are
+        # matched by name: the structures number them differently and the
+        # question is whether an isoleucine or a tyrosine is bonded at all
+        hb_n, hb_res = None, ""
+        if sites.get(struct) is not None and best_pick is not None:
+            found, got = [], set()
+            for i, x in enumerate(best_pick):
+                try:
+                    mh = Chem.AddHs(pose[i][x][1], addCoords=True)
+                except Exception:
+                    mh = pose[i][x][1]
+                hits, _ = bonds_for_pose(mh, sites[struct], a)
+                mine = {k for k in hits
+                        if "".join(c for c in k if c.isalpha()).upper()[:3]
+                        in names}
+                found.append(bool(mine))
+                got |= mine
+            hb_n = f"{sum(found)}/{len(found)}"
+            hb_res = " ".join(sorted(got))
+
         tops = tuple(0 for _ in seeds)
         tt = worst(tops)
         rows.append({
@@ -324,6 +380,8 @@ def main():
             "pairs": ("  ".join(
                 f"s{seeds[i][2]}-s{seeds[j][2]} {q:.2f}"
                 for i, j, q in pairs_of(best_pick)) if best_pick else ""),
+            "hbond_seeds": hb_n if hb_n is not None else "",
+            "hbond_residues": hb_res,
             "within_min": float(np.mean(wmin)) if wmin else np.nan,
             "max_drift": float(max(drift)) if drift else np.nan,
             "poses_far": int(sum(d > a.drift_cut for d in drift)),
@@ -401,6 +459,37 @@ def main():
     if t["mean_rank"].mean() > 2.5:
         log.append("  the seeds find a common pose and rank it differently, so "
                    "what disagrees is the scoring, not the search")
+
+    if a.receptors:
+        log.append("")
+        log.append(f"=== does the pose the seeds agreed on bond an "
+                   f"{' or '.join(names)}? ===")
+        log.append("    by residue name, not number: each structure numbers "
+                   "them its own way")
+        log.append(f"  {'compound':10s}{'structure':12s}{'ranks':>12s}"
+                   f"{'agree':>8s}{'seeds bonded':>14s}   residues")
+        for c in order:
+            g = t[t.compound == c]
+            for st in structs:
+                x = g[g.structure == st]
+                if not len(x):
+                    continue
+                x = x.iloc[0]
+                log.append(f"  {c:10s}{st:12s}{x['consensus_ranks']:>12s}"
+                           f"{x['consensus_rmsd']:8.2f}"
+                           f"{x['hbond_seeds']:>14s}   "
+                           f"{x['hbond_residues'] or '-'}")
+            log.append("")
+        hit = t["hbond_residues"].astype(str).str.len() > 0
+        log.append(f"  {int(hit.sum())} of {len(t)} cells have the agreed pose "
+                   f"bonding one of {', '.join(names)}")
+        log.append(f"  {'compound':10s}{'cells with a bond':>19s}")
+        for c in order:
+            g = t[t.compound == c]
+            if not len(g):
+                continue
+            k = int((g["hbond_residues"].astype(str).str.len() > 0).sum())
+            log.append(f"  {c:10s}{k:12d}/{len(g):<6d}")
 
     w = t["within_min"].mean()
     g = t["consensus_rmsd"].mean()
