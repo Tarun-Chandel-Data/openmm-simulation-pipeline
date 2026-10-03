@@ -238,7 +238,7 @@ def preflight(a):
         say("ok", f"{a.np} of {ncpu} cores, {ncpu - a.np} left free")
 
     say("ok", "CUDA_VISIBLE_DEVICES will be empty for every child process")
-    return bad, cpds
+    return bad, cpds, params
 
 
 def main():
@@ -282,7 +282,7 @@ def main():
     a = p.parse_args()
 
     say("mode", "checking only" if not a.run else "checking, then running")
-    bad, cpds = preflight(a)
+    bad, cpds, params = preflight(a)
     if bad:
         print()
         for b in bad:
