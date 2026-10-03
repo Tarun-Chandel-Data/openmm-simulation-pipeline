@@ -289,6 +289,21 @@ def main():
             best_pick = floor_pick
         best = worst(best_pick) if best_pick else np.nan
 
+        # The control the agreement number needs. Within one run gnina keeps
+        # its poses apart, so the closest two distinct poses of a single seed
+        # set the scale at which two poses count as different at all. If the
+        # seeds agree far more closely than that, they are landing on the same
+        # pose; if they agree at about that distance, the agreement is only
+        # what taking a minimum over a few hundred comparisons would give
+        # anyway, and means nothing.
+        wmin = []
+        for ps in pose:
+            d = [rms(ps[x][1], ps[y][1])
+                 for x, y in itertools.combinations(range(len(ps)), 2)]
+            d = [q for q in d if not np.isnan(q)]
+            if d:
+                wmin.append(min(d))
+
         # where the poses sit, so an impossible distance can be traced to a
         # pose that left the box rather than to the metric
         cen = [np.array(x[1].GetConformer().GetPositions()).mean(0)
@@ -309,6 +324,7 @@ def main():
             "pairs": ("  ".join(
                 f"s{seeds[i][2]}-s{seeds[j][2]} {q:.2f}"
                 for i, j, q in pairs_of(best_pick)) if best_pick else ""),
+            "within_min": float(np.mean(wmin)) if wmin else np.nan,
             "max_drift": float(max(drift)) if drift else np.nan,
             "poses_far": int(sum(d > a.drift_cut for d in drift)),
             "top_vs_top": tt,
@@ -385,6 +401,39 @@ def main():
     if t["mean_rank"].mean() > 2.5:
         log.append("  the seeds find a common pose and rank it differently, so "
                    "what disagrees is the scoring, not the search")
+
+    w = t["within_min"].mean()
+    g = t["consensus_rmsd"].mean()
+    log.append("")
+    log.append("=== is the agreement real, or just the smallest of many "
+               "comparisons? ===")
+    log.append(f"  the seeds agree to {g:.2f} A on the pose they share")
+    log.append(f"  within one run, the two closest distinct poses stand "
+               f"{w:.2f} A apart")
+    if np.isfinite(w) and np.isfinite(g):
+        if g < 0.25 * w:
+            log.append(f"  the agreement is {w / max(g, 1e-9):.0f} times "
+                       f"closer than two poses of one run ever come, so the "
+                       f"seeds are landing on the same pose and not on a near "
+                       f"miss")
+        elif g < w:
+            log.append("  the agreement is closer than two poses of one run "
+                       "come, but not by much; read it as weak")
+        else:
+            log.append("  [warn] the seeds agree no more closely than two "
+                       "distinct poses of a single run differ. A minimum over "
+                       "several hundred comparisons would reach this on its "
+                       "own, so this number is not evidence that the seeds "
+                       "found the same pose")
+    ok = t[(t["consensus_rmsd"] > 0.01) & t["within_min"].notna()]
+    if len(ok):
+        r = (ok["within_min"] / ok["consensus_rmsd"])
+        log.append(f"  per cell that ratio is {r.median():.0f} at the median, "
+                   f"{r.min():.0f} at worst, over {len(ok)} cells")
+        thin = int((r < 2).sum())
+        if thin:
+            log.append(f"  [warn] {thin} cells where it is under 2; their "
+                       f"agreement carries no weight")
 
     far = t[t["poses_far"] > 0]
     if len(far):
