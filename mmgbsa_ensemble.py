@@ -215,6 +215,13 @@ def preflight(a):
             bad.append(f"{c}: no --ligand-params given for it")
             continue
         if not os.path.isdir(d):
+            # with --make-params this is where they will be written, so a
+            # directory that is not there yet is the normal case, not a fault
+            if a.make_params:
+                missing_params.append(c)
+                say("ok", f"{c}: no parameters yet; they will be derived "
+                          f"into {d}")
+                continue
             bad.append(f"{c}: not a directory: {d}")
             continue
         frc = os.path.join(d, "LIG.frcmod")
