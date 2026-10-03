@@ -33,6 +33,117 @@ def say(tag, msg):
     print(f"[{tag}] {msg}", flush=True)
 
 
+# Two sets of atom types turn up in a mol2 and they are read differently.
+# SYBYL writes the element, a dot and a hybridisation - C.3, N.ar, Cl. GAFF,
+# which is what antechamber writes and what these ligands carry, writes a
+# lower-case code with no dot, where ca is aromatic carbon and cl is chlorine.
+# Splitting a GAFF type on a dot returns the whole type and compares it with
+# an element, so every atom reads as a mismatch.
+GAFF_EXACT = {"cl": "CL", "br": "BR", "f": "F", "i": "I", "si": "SI"}
+GAFF_FIRST = {"c": "C", "n": "N", "o": "O", "s": "S", "p": "P", "h": "H"}
+
+
+def element_of(atom_type, atom_name=""):
+    t = atom_type.strip()
+    if "." in t:                      # SYBYL
+        return t.split(".")[0].upper()
+    low = t.lower()
+    if low in GAFF_EXACT:             # GAFF, where cl is not a carbon
+        return GAFF_EXACT[low]
+    if low[:1] in GAFF_FIRST:
+        return GAFF_FIRST[low[:1]]
+    # nothing recognised: fall back on the name, which is usually the
+    # element followed by a number
+    nm = "".join(ch for ch in atom_name if ch.isalpha()).upper()
+    for e in ("CL", "BR", "SI"):
+        if nm.startswith(e):
+            return e
+    return (nm[:1] or t[:1]).upper()
+
+
+def read_mol2_atoms(path):
+    """(name, element) for each atom of a mol2, in file order."""
+    out, on = [], False
+    try:
+        with open(path) as f:
+            for line in f:
+                t = line.rstrip("\n")
+                st = t.strip()
+                if st.startswith("@<TRIPOS>"):
+                    on = st == "@<TRIPOS>ATOM"
+                    continue
+                if not on or not st:
+                    continue
+                c = st.split()
+                if len(c) < 6:
+                    continue
+                out.append((c[1], element_of(c[5], c[1])))
+    except OSError as e:
+        return None, f"{path}: {e}"
+    return (out, None) if out else (None, f"{path}: no ATOM block")
+
+
+def read_pose_elements(path, select_by):
+    """Elements of the best-scoring pose of an sdf, in file order."""
+    try:
+        from rdkit import Chem, RDLogger
+        RDLogger.DisableLog("rdApp.*")
+    except ImportError:
+        return None, "needs rdkit to read the poses"
+    try:
+        mols = [m for m in Chem.SDMolSupplier(path, removeHs=False,
+                                              sanitize=False) if m is not None]
+    except Exception as e:                                    # noqa: BLE001
+        return None, f"{path}: {e}"
+    if not mols:
+        return None, f"{path}: no poses read"
+    best, bv = mols[0], None
+    for m in mols:
+        if m.HasProp(select_by):
+            try:
+                v = float(m.GetProp(select_by))
+            except ValueError:
+                continue
+            if bv is None or v > bv:
+                best, bv = m, v
+    return [a.GetSymbol().upper() for a in best.GetAtoms()], None
+
+
+def check_atom_order(lig_dir, pose_file, select_by):
+    """The one joint in this pipeline that can quietly produce nonsense.
+
+    The pose carries coordinates and the parameters carry charges and types;
+    they are married by position in the file. If the two atom lists are not
+    the same elements in the same order, every charge lands on the wrong
+    atom and the result looks plausible and is meaningless."""
+    mol2 = os.path.join(lig_dir, "LIG.mol2")
+    if not os.path.exists(mol2):
+        return f"no LIG.mol2 in {lig_dir} to check the atom order against"
+    atoms, err = read_mol2_atoms(mol2)
+    if err:
+        return err
+    els, err = read_pose_elements(pose_file, select_by)
+    if err:
+        return err
+    pe = [e for _, e in atoms]
+    if len(pe) != len(els):
+        heavy_m = sum(1 for e in pe if e != "H")
+        heavy_p = sum(1 for e in els if e != "H")
+        extra = ("; the pose has no hydrogens while the parameters do"
+                 if heavy_p == len(els) and heavy_m == heavy_p
+                 else "")
+        return (f"atom count differs: LIG.mol2 has {len(pe)} "
+                f"({heavy_m} heavy), the pose has {len(els)} "
+                f"({heavy_p} heavy){extra}")
+    wrong = [i for i, (x, y) in enumerate(zip(pe, els)) if x != y]
+    if wrong:
+        i = wrong[0]
+        return (f"atom {i + 1} is {pe[i]} in LIG.mol2 and {els[i]} in the "
+                f"pose; {len(wrong)} of {len(pe)} differ, so the two files "
+                f"are not in the same order")
+    return None
+
+
 def safe_env(np_cap):
     """No graphics card, for this process and everything it starts."""
     e = dict(os.environ)
@@ -154,8 +265,11 @@ def main():
     p.add_argument("--np", type=int, default=16,
                    help="cores for MMPBSA.py. Two fewer than the machine has, "
                         "at most, so a job on the card keeps its host thread")
-    p.add_argument("--igb", type=int, default=8)
+    p.add_argument("--igb", type=int, default=2,
+                   help="2, as in the simulations already run. A different model would not give comparable numbers")
     p.add_argument("--salt", type=float, default=0.15)
+    p.add_argument("--protein-ff", default="leaprc.protein.ff14SB")
+    p.add_argument("--ligand-ff", default="leaprc.gaff2")
     p.add_argument("--min-steps", type=int, default=500)
     p.add_argument("--restraint", type=float, default=5.0,
                    help="kcal/mol/A^2 on the receptor heavy atoms during "
@@ -191,6 +305,24 @@ def main():
         "sander answers" if ok else "sander did not answer --version; "
         "that is not fatal, it will be tried properly on the trial complex")
 
+    # the atom order is checked on one real pose per compound, because
+    # everything downstream silently depends on it
+    for c in cpds:
+        d = params.get(c)
+        hits = sorted(glob.glob(os.path.join(a.poses, "*", f"{c}__*.sdf")))
+        if not hits:
+            say("STOP", f"{c}: no pose files under {a.poses}")
+            return 1
+        err = check_atom_order(d, hits[0], a.select_by)
+        if err:
+            say("STOP", f"{c}: {err}")
+            say("STOP", f"     checked against {hits[0]}")
+            return 1
+        say("ok", f"{c}: the pose and LIG.mol2 hold the same atoms in the "
+                  f"same order")
+
+    say("ok", f"protocol: {a.protein_ff}, {a.ligand_ff}, igb={a.igb}, "
+              f"saltcon={a.salt}")
     say("next", "the checks above pass. The trial complex and the run itself "
                 "are not built yet - send this output together with the "
                 "tleap.in used for the simulations, so the complex is built "
