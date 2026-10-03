@@ -68,6 +68,17 @@ def main():
                         "is measured over the core only, which separates a "
                         "scaffold that moved from substituents that turned")
     p.add_argument("--only", help="comma-separated compounds, in order")
+    p.add_argument("--qc-threshold", type=float,
+                   help="treat a compound-structure cell as converged when "
+                        "the top poses of its seeds agree to within this many "
+                        "angstroms, and report what filtering on it would "
+                        "cost. Nothing is deleted: the point is to see the "
+                        "price before paying it")
+    p.add_argument("--qc-stat", choices=("mean", "max"), default="max",
+                   help="agreement judged on the mean or the worst pair of "
+                        "seeds. 'max' is the stricter and the honest one, "
+                        "since one disagreeing seed means the cell did not "
+                        "converge")
     p.add_argument("--out")
     a = p.parse_args()
 
@@ -206,11 +217,59 @@ def main():
     log.append(f"  a contact read from the best pose is only as firm as these "
                f"numbers are small")
 
+    if a.qc_threshold is not None:
+        col = "between_" + a.qc_stat
+        t["converged"] = t[col] <= a.qc_threshold
+        log.append("")
+        log.append(f"=== seed agreement: would a {a.qc_threshold} A filter be "
+                   f"safe? ===")
+        log.append(f"    a cell passes when its seeds' top poses agree to "
+                   f"within {a.qc_threshold} A ({a.qc_stat} over the seed "
+                   f"pairs)")
+        kept, tot = int(t["converged"].sum()), len(t)
+        log.append(f"  {kept} of {tot} compound-structure cells pass "
+                   f"({100.0 * kept / tot:.0f}%)")
+        log.append("")
+        log.append(f"  {'compound':10s}{'cells':>7s}{'pass':>7s}{'lost':>7s}"
+                   f"{'% kept':>9s}")
+        rate = {}
+        for c in order:
+            g = t[t.compound == c]
+            if not len(g):
+                continue
+            k, n = int(g["converged"].sum()), len(g)
+            rate[c] = 100.0 * k / n
+            log.append(f"  {c:10s}{n:7d}{k:7d}{n - k:7d}{rate[c]:8.0f}%")
+        if rate:
+            lo, hi = min(rate.values()), max(rate.values())
+            log.append("")
+            log.append(f"  the filter keeps {hi:.0f}% of one compound's cells "
+                       f"and {lo:.0f}% of another's")
+            if hi - lo > 20:
+                log.append("  [warn] it falls unevenly across the compounds, "
+                           "so the compounds are no longer compared on the "
+                           "same set of structures. A per-compound average "
+                           "taken after this filter is not a like-for-like "
+                           "number")
+        log.append("")
+        log.append("  the filter removes the cells where the search did not "
+                   "settle on one pose. Those are also the cells least likely "
+                   "to show a contact, so a contact frequency measured on "
+                   "what survives is higher than the frequency in the data, "
+                   "whatever the contact actually does")
+        log.append("  report both, as a sensitivity check: the number from "
+                   "every cell, and the number from the converged ones, and "
+                   "say how many cells were dropped")
+
     text = "\n".join(log)
     print(text)
     if a.out:
         os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
         t.to_csv(a.out + ".csv", index=False)
+        if a.qc_threshold is not None:
+            (t[["compound", "structure", "between_mean", "between_max",
+                "converged"]]
+             .to_csv(a.out + "_qc.csv", index=False))
         with open(a.out + ".txt", "w") as f:
             f.write(text + "\n")
         print(f"\n[out] {a.out}.csv, {a.out}.txt")
