@@ -146,25 +146,54 @@ def main():
                  for i, j in itertools.combinations(range(len(seeds)), 2)]
             return np.nan if any(np.isnan(q) for q in v) else max(v)
 
+        # The pose wanted is the earliest-ranked one the seeds agree on, not
+        # the one they agree on most closely. Those are different: a run can
+        # agree at rank 1 to within 0.17 A and at rank 6 to within 0.14, and
+        # taking the smaller number reports rank 6, which says the scoring
+        # failed when it did not. So among the combinations that agree within
+        # the threshold, the one with the lowest ranks is taken, and the
+        # distance is whatever that combination gives.
         combos = int(np.prod(n))
-        best, best_pick = np.inf, None
+        best_pick, floor_pick, floor = None, None, np.inf
         if combos <= a.max_combos:
             for pick in itertools.product(*[range(x) for x in n]):
                 w = worst(pick)
-                if not np.isnan(w) and w < best:
-                    best, best_pick = w, pick
+                if np.isnan(w):
+                    continue
+                if w < floor:
+                    floor, floor_pick = w, pick
+                if w <= a.threshold:
+                    key = (sum(pick), w)
+                    if best_pick is None or key < (sum(best_pick),
+                                                   worst(best_pick)):
+                        best_pick = pick
         else:
-            # anchor on each pose of the first seed and take the nearest pose
-            # in every other seed; cheaper, and the answer it gives is an
-            # upper bound on the true best
+            # anchors taken in rank order; in each other seed the earliest
+            # pose that agrees is taken, so the first feasible anchor wins
             for x in range(n[0]):
-                pick = [x]
+                pick, ok = [x], True
                 for j in range(1, len(seeds)):
                     col = D[(0, j)][x]
-                    pick.append(int(np.nanargmin(col)))
-                w = worst(tuple(pick))
-                if not np.isnan(w) and w < best:
-                    best, best_pick = w, tuple(pick)
+                    cand = [y for y in range(n[j])
+                            if not np.isnan(col[y]) and col[y] <= a.threshold]
+                    if not cand:
+                        ok = False
+                        break
+                    pick.append(cand[0])
+                near = [x] + [int(np.nanargmin(D[(0, j)][x]))
+                              for j in range(1, len(seeds))]
+                w = worst(tuple(near))
+                if not np.isnan(w) and w < floor:
+                    floor, floor_pick = w, tuple(near)
+                if ok:
+                    w = worst(tuple(pick))
+                    if not np.isnan(w) and w <= a.threshold:
+                        best_pick = tuple(pick)
+                        break
+        converged = best_pick is not None
+        if best_pick is None:
+            best_pick = floor_pick
+        best = worst(best_pick) if best_pick else np.nan
 
         tops = tuple(0 for _ in seeds)
         tt = worst(tops)
@@ -176,8 +205,9 @@ def main():
                                 if best_pick else ""),
             "mean_rank": (float(np.mean([i + 1 for i in best_pick]))
                           if best_pick else np.nan),
+            "closest_rmsd": floor if np.isfinite(floor) else np.nan,
             "top_vs_top": tt,
-            "converged": (bool(np.isfinite(best) and best <= a.threshold))})
+            "converged": converged})
     if not rows:
         sys.exit("no compound-structure cell had two or more seeds")
     t = pd.DataFrame(rows)
@@ -195,12 +225,18 @@ def main():
     structs = sorted(t["structure"].unique())
     log.append("")
     log.append("=== did the seeds find the same pose, at any rank? (A) ===")
-    log.append("    'agree' is the worst pairwise distance within the best "
-               "combination, so it is small only when every seed agrees")
+    log.append(f"    the earliest-ranked combination whose seeds all agree "
+               f"within {a.threshold} A is taken, not the closest one: what "
+               f"is asked is how far down the list the agreement is, so a "
+               f"nearer match at a worse rank must not displace it")
+    log.append("    'agree' is the worst pairwise distance inside that "
+               "combination; 'closest' is the best any combination reaches, "
+               "whatever its rank")
     log.append("    'ranks' is where that pose sat in each seed; 'top v top' "
                "is the same measurement using only each seed's best pose")
     log.append(f"  {'compound':10s}{'structure':12s}{'agree':>8s}"
-               f"{'ranks':>12s}{'mean rank':>11s}{'top v top':>11s}")
+               f"{'ranks':>12s}{'mean rank':>11s}{'closest':>10s}"
+               f"{'top v top':>11s}")
     for c in order:
         g = t[t.compound == c]
         for st in structs:
@@ -210,7 +246,8 @@ def main():
             x = x.iloc[0]
             log.append(f"  {c:10s}{st:12s}{x['consensus_rmsd']:8.2f}"
                        f"{x['consensus_ranks']:>12s}{x['mean_rank']:11.1f}"
-                       f"{x['top_vs_top']:11.2f}")
+                       f"{x['closest_rmsd']:10.2f}{x['top_vs_top']:11.2f}"
+                       + ("" if x["converged"] else "   [no agreement]"))
         log.append("")
 
     log.append("=== by compound ===")
