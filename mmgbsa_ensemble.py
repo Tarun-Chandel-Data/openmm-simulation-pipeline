@@ -126,21 +126,31 @@ def check_atom_order(lig_dir, pose_file, select_by):
     if err:
         return err
     pe = [e for _, e in atoms]
-    if len(pe) != len(els):
-        heavy_m = sum(1 for e in pe if e != "H")
-        heavy_p = sum(1 for e in els if e != "H")
-        extra = ("; the pose has no hydrogens while the parameters do"
-                 if heavy_p == len(els) and heavy_m == heavy_p
-                 else "")
-        return (f"atom count differs: LIG.mol2 has {len(pe)} "
-                f"({heavy_m} heavy), the pose has {len(els)} "
-                f"({heavy_p} heavy){extra}")
-    wrong = [i for i, (x, y) in enumerate(zip(pe, els)) if x != y]
+    # Hydrogens are compared separately from the rest. A docking program
+    # writes back whichever hydrogens its input carried - often only the
+    # polar ones - while the parameters carry them all. That is not a
+    # mismatch to refuse: the heavy atoms are what the search placed, and
+    # the hydrogens are rebuilt from LIG.lib, which holds their geometry,
+    # and relaxed by the minimisation that follows. What cannot be
+    # recovered from is the heavy atoms being different or in a different
+    # order, because nothing downstream would notice.
+    hm = [(i, e) for i, e in enumerate(pe) if e != "H"]
+    hp = [(i, e) for i, e in enumerate(els) if e != "H"]
+    if len(hm) != len(hp):
+        return (f"heavy atoms differ: LIG.mol2 has {len(hm)}, the pose has "
+                f"{len(hp)}. These are not the same molecule")
+    wrong = [k for k, ((_, x), (_, y)) in enumerate(zip(hm, hp)) if x != y]
     if wrong:
-        i = wrong[0]
-        return (f"atom {i + 1} is {pe[i]} in LIG.mol2 and {els[i]} in the "
-                f"pose; {len(wrong)} of {len(pe)} differ, so the two files "
-                f"are not in the same order")
+        k = wrong[0]
+        return (f"heavy atom {k + 1} is {hm[k][1]} in LIG.mol2 and "
+                f"{hp[k][1]} in the pose; {len(wrong)} of {len(hm)} differ, "
+                f"so the two are not in the same order")
+    nh_m, nh_p = len(pe) - len(hm), len(els) - len(hp)
+    if nh_m != nh_p:
+        return ("note", f"{len(hm)} heavy atoms match in order; the pose "
+                        f"carries {nh_p} hydrogens against {nh_m} in the "
+                        f"parameters, so hydrogens will be rebuilt from "
+                        f"LIG.lib and relaxed by the minimisation")
     return None
 
 
@@ -314,12 +324,15 @@ def main():
             say("STOP", f"{c}: no pose files under {a.poses}")
             return 1
         err = check_atom_order(d, hits[0], a.select_by)
-        if err:
+        if isinstance(err, tuple):
+            say("ok", f"{c}: {err[1]}")
+        elif err:
             say("STOP", f"{c}: {err}")
             say("STOP", f"     checked against {hits[0]}")
             return 1
-        say("ok", f"{c}: the pose and LIG.mol2 hold the same atoms in the "
-                  f"same order")
+        else:
+            say("ok", f"{c}: the pose and LIG.mol2 hold the same atoms in "
+                      f"the same order")
 
     say("ok", f"protocol: {a.protein_ff}, {a.ligand_ff}, igb={a.igb}, "
               f"saltcon={a.salt}")
