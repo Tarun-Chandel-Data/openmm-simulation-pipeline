@@ -196,8 +196,9 @@ def main():
     log.append("")
     if solo:
         log.append("=== the top pose of each run: how many hydrogen bonds ===")
-        log.append("    one pose per seed, so these are the bonds of the pose "
-                   "the scoring put first, averaged over the seeds")
+        log.append("    the bonds made by the pose the scoring put first. "
+                   "Where a cell holds more than one run they are averaged "
+                   "over the runs, so the figure is per run either way")
     else:
         log.append(f"=== the best {a.top_n} poses of each run: how many bonds, "
                    f"and to the same residues? ===")
@@ -211,7 +212,7 @@ def main():
                   f"{'kept by all':>13s}{'agreement':>11s}")
                + ("   residues bonded" if solo
                   else "   residues every pose makes"))
-    log.append(f"  {'':10s}{'':12s}{'per seed':>9s}{'/seed':>8s}"
+    log.append(f"  {'':10s}{'':12s}{'per run':>9s}{'/run':>8s}"
                + ("" if solo else f"{'mean +- sd':>12s}"))
     for c in order:
         g = t[t.compound == c]
@@ -253,7 +254,7 @@ def main():
         held = t["conserved"].str.contains(r, na=False)
         log.append("")
         log.append(f"  {r} is bonded by "
-                   + ("the top pose of every seed" if solo else
+                   + ("the top pose of every run" if solo else
                       f"every one of the best {a.top_n} poses")
                    + f" in {int(held.sum())} of {len(t)} compound-structure "
                      f"pairs")
