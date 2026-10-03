@@ -350,6 +350,7 @@ def main():
         # matched by name: the structures number them differently and the
         # question is whether an isoleucine or a tyrosine is bonded at all
         hb_n, hb_res = None, ""
+        n_all, n_tgt = [], []
         if sites.get(struct) is not None and best_pick is not None:
             found, got = [], set()
             for i, x in enumerate(best_pick):
@@ -358,11 +359,15 @@ def main():
                 except Exception:
                     mh = pose[i][x][1]
                 hits, _ = bonds_for_pose(mh, sites[struct], a)
-                mine = {k for k in hits
+                mine = {k: v for k, v in hits.items()
                         if "".join(c for c in k if c.isalpha()).upper()[:3]
                         in names}
+                # how many bonds, not how many residues: a residue can make
+                # more than one
+                n_all.append(int(sum(hits.values())))
+                n_tgt.append(int(sum(mine.values())))
                 found.append(bool(mine))
-                got |= mine
+                got |= set(mine)
             hb_n = f"{sum(found)}/{len(found)}"
             hb_res = " ".join(sorted(got))
 
@@ -381,6 +386,10 @@ def main():
                 f"s{seeds[i][2]}-s{seeds[j][2]} {q:.2f}"
                 for i, j, q in pairs_of(best_pick)) if best_pick else ""),
             "hbond_seeds": hb_n if hb_n is not None else "",
+            "hbonds_each": "/".join(str(q) for q in n_all),
+            "hbonds_mean": float(np.mean(n_all)) if n_all else np.nan,
+            "target_each": "/".join(str(q) for q in n_tgt),
+            "target_mean": float(np.mean(n_tgt)) if n_tgt else np.nan,
             "hbond_residues": hb_res,
             "within_min": float(np.mean(wmin)) if wmin else np.nan,
             "max_drift": float(max(drift)) if drift else np.nan,
@@ -466,8 +475,12 @@ def main():
                    f"{' or '.join(names)}? ===")
         log.append("    by residue name, not number: each structure numbers "
                    "them its own way")
+        log.append("    'bonds' counts hydrogen bonds, not residues: one "
+                   "residue can make more than one")
         log.append(f"  {'compound':10s}{'structure':12s}{'ranks':>12s}"
-                   f"{'agree':>8s}{'seeds bonded':>14s}   residues")
+                   f"{'agree':>8s}{'bonds each':>12s}{'mean':>7s}"
+                   f"{'to ' + '/'.join(names):>12s}{'mean':>7s}"
+                   f"{'seeds':>8s}   residues")
         for c in order:
             g = t[t.compound == c]
             for st in structs:
@@ -477,19 +490,25 @@ def main():
                 x = x.iloc[0]
                 log.append(f"  {c:10s}{st:12s}{x['consensus_ranks']:>12s}"
                            f"{x['consensus_rmsd']:8.2f}"
-                           f"{x['hbond_seeds']:>14s}   "
+                           f"{x['hbonds_each']:>12s}{x['hbonds_mean']:7.1f}"
+                           f"{x['target_each']:>12s}{x['target_mean']:7.1f}"
+                           f"{x['hbond_seeds']:>8s}   "
                            f"{x['hbond_residues'] or '-'}")
             log.append("")
         hit = t["hbond_residues"].astype(str).str.len() > 0
         log.append(f"  {int(hit.sum())} of {len(t)} cells have the agreed pose "
                    f"bonding one of {', '.join(names)}")
-        log.append(f"  {'compound':10s}{'cells with a bond':>19s}")
+        log.append("")
+        log.append(f"  {'compound':10s}{'bonds/pose':>12s}"
+                   f"{'to ' + '/'.join(names):>12s}{'cells bonded':>14s}")
         for c in order:
             g = t[t.compound == c]
             if not len(g):
                 continue
             k = int((g["hbond_residues"].astype(str).str.len() > 0).sum())
-            log.append(f"  {c:10s}{k:12d}/{len(g):<6d}")
+            log.append(f"  {c:10s}{g['hbonds_mean'].mean():12.1f}"
+                       f"{g['target_mean'].mean():12.1f}"
+                       f"{k:9d}/{len(g):<4d}")
 
     w = t["within_min"].mean()
     g = t["consensus_rmsd"].mean()
