@@ -66,6 +66,13 @@ def main():
     p.add_argument("--score", default="CNNscore")
     p.add_argument("--affinity", default="minimizedAffinity")
     p.add_argument("--only", help="comma-separated compounds, in order")
+    p.add_argument("--by-run", action="store_true",
+                   help="report each run under its own heading instead of "
+                        "pooling them. Two runs are repeats of each other only "
+                        "when they used the same receptors; ensembles taken "
+                        "from different simulations are different experiments, "
+                        "and averaging them hides the difference they were "
+                        "made to show")
     p.add_argument("--top-n", type=int, default=0,
                    help="keep only the N best-scoring poses of each run in "
                         "the all-pose columns. The lower-ranked poses of a "
@@ -103,7 +110,7 @@ def main():
             nm = parse_name(f)
             if nm is None:
                 continue
-            cpd, struct, _seed = nm
+            cpd, struct, runid = nm
             if keep and cpd not in keep:
                 continue
             try:
@@ -112,7 +119,7 @@ def main():
             except Exception as e:
                 bad.append((os.path.basename(f), str(e).split("\n")[0]))
                 continue
-            k = (cpd, struct)
+            k = (cpd, struct, runid) if a.by_run else (cpd, struct)
             c = cell.setdefault(k, {"runs": 0, "top_hb": {x: 0 for x in res},
                                     "top_either": 0, "top_s": [], "top_a": [],
                                     "n_pose": 0, "hb": {x: 0 for x in res},
@@ -158,6 +165,7 @@ def main():
 
     cpds = keep if keep else sorted({k[0] for k in cell})
     structs = sorted({k[1] for k in cell})
+    runs = sorted({k[2] for k in cell}) if a.by_run else [None]
 
     log = [f"[in] {len(cpds)} compounds x {len(structs)} structures",
            f"     hydrogen bond: D-A <= {a.dist} A with H...A <= {a.h_dist} A "
@@ -177,50 +185,59 @@ def main():
                f"contact at {res[1] if len(res) > 1 else res[0]} very nearly "
                f"saturates; the per-residue columns beside them are what "
                f"separates the compounds")
-    log.append(f"  {'compound':9s}{'structure':11s}"
-               f"{'hinge':>8s}{'TYR':>7s}{'ILE':>7s}"
-               f"{'score':>8s}{'affinity':>10s}"
-               f"{'hinge':>10s}{'TYR':>8s}{'ILE':>8s}"
-               f"{'score':>15s}{'affinity':>16s}")
-    log.append(f"  {'':9s}{'':11s}{'top':>8s}{'top':>7s}{'top':>7s}"
-               f"{'top':>8s}{'top':>10s}"
-               f"{'all poses':>10s}{'poses':>8s}{'poses':>8s}"
-               f"{'mean +- sd':>15s}{'mean +- sd':>16s}")
+    # the residue columns are headed with the residues actually asked for;
+    # a fixed TYR/ILE heading reads as those residues whatever was measured,
+    # and the two isoforms here do not use the same names or numbers
+    r0 = res[0]
+    r1 = res[1] if len(res) > 1 else "-"
     rows = []
-    for cpd in cpds:
-        for st in structs:
-            c = cell.get((cpd, st))
-            if c is None:
-                log.append(f"  {cpd:9s}{st:11s}{'-':>8s}")
-                continue
-            n, np_ = c["runs"], c["n_pose"]
-            s, aff = np.array(c["s"]), np.array(c["aff"])
-            frac = lambda k, d: f"{k}/{d}"
-            sd = lambda v: np.std(v, ddof=1) if len(v) > 1 else 0.0
-            line = (f"  {cpd:9s}{st:11s}"
+    for run in runs:
+        if run is not None:
+            log.append(f"--- {run} ---")
+        log.append(f"  {'compound':9s}{'structure':11s}"
+                   f"{'either':>8s}{r0:>9s}{r1:>9s}"
+                   f"{'score':>8s}{'affinity':>10s}"
+                   f"{'either':>10s}{r0:>10s}{r1:>10s}"
+                   f"{'score':>15s}{'affinity':>16s}")
+        log.append(f"  {'':9s}{'':11s}{'top':>8s}{'top':>9s}{'top':>9s}"
+                   f"{'top':>8s}{'top':>10s}"
+                   f"{'all poses':>10s}{'poses':>10s}{'poses':>10s}"
+                   f"{'mean +- sd':>15s}{'mean +- sd':>16s}")
+        for cpd in cpds:
+            for st in structs:
+                c = cell.get((cpd, st, run) if run is not None else (cpd, st))
+                if c is None:
+                    log.append(f"  {cpd:9s}{st:11s}{'-':>8s}")
+                    continue
+                n, np_ = c["runs"], c["n_pose"]
+                sv, aff = np.array(c["s"]), np.array(c["aff"])
+                frac = lambda k, d: f"{k}/{d}"
+                sd = lambda v: np.std(v, ddof=1) if len(v) > 1 else 0.0
+                log.append(
+                    f"  {cpd:9s}{st:11s}"
                     f"{frac(c['top_either'], n):>8s}"
-                    f"{frac(c['top_hb'][res[0]], n):>7s}"
-                    f"{frac(c['top_hb'][res[1]] if len(res) > 1 else 0, n):>7s}"
+                    f"{frac(c['top_hb'][res[0]], n):>9s}"
+                    f"{frac(c['top_hb'][res[1]] if len(res) > 1 else 0, n):>9s}"
                     f"{np.mean(c['top_s']):8.3f}{np.mean(c['top_a']):10.2f}"
                     f"{frac(c['either'], np_):>10s}"
-                    f"{frac(c['hb'][res[0]], np_):>8s}"
-                    f"{frac(c['hb'][res[1]] if len(res) > 1 else 0, np_):>8s}"
-                    f"{np.mean(s):10.3f} +-{sd(s):4.3f}"
+                    f"{frac(c['hb'][res[0]], np_):>10s}"
+                    f"{frac(c['hb'][res[1]] if len(res) > 1 else 0, np_):>10s}"
+                    f"{np.mean(sv):10.3f} +-{sd(sv):4.3f}"
                     f"{np.mean(aff):10.2f} +-{sd(aff):5.2f}")
-            log.append(line)
-            r = {"compound": cpd, "structure": st, "runs": n,
-                 "top_hinge": c["top_either"], "top_score": np.mean(c["top_s"]),
-                 "top_affinity": np.mean(c["top_a"]), "poses": np_,
-                 "poses_hinge": c["either"],
-                 "score_mean": np.mean(s),
-                 "score_sd": np.std(s, ddof=1) if len(s) > 1 else 0.0,
-                 "affinity_mean": np.mean(aff),
-                 "affinity_sd": np.std(aff, ddof=1) if len(aff) > 1 else 0.0}
-            for x in res:
-                r["top_" + x] = c["top_hb"][x]
-                r["poses_" + x] = c["hb"][x]
-            rows.append(r)
-        log.append("")
+                r = {"compound": cpd, "structure": st, "runs": n,
+                     "top_hinge": c["top_either"],
+                     "top_score": np.mean(c["top_s"]),
+                     "top_affinity": np.mean(c["top_a"]), "poses": np_,
+                     "poses_hinge": c["either"],
+                     "score_mean": np.mean(sv), "score_sd": sd(sv),
+                     "affinity_mean": np.mean(aff), "affinity_sd": sd(aff)}
+                if run is not None:
+                    r["run"] = run
+                for x in res:
+                    r["top_" + x] = c["top_hb"][x]
+                    r["poses_" + x] = c["hb"][x]
+                rows.append(r)
+            log.append("")
 
     text = "\n".join(log)
     print(text)
