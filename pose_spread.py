@@ -37,6 +37,18 @@ except ImportError:
     sys.exit("needs rdkit")
 
 
+def heavy(m):
+    """Hydrogens off before any distance is taken.
+
+    A docked pose's hydrogens are placed by the program, not searched, so a
+    distance that counts them measures partly the placement routine. Every
+    RMSD here is over heavy atoms."""
+    try:
+        return Chem.RemoveHs(m)
+    except Exception:
+        return m
+
+
 def parse_name(path):
     b = os.path.basename(path)
     for e in (".sdf.gz", ".sdf"):
@@ -133,7 +145,7 @@ def main():
             except Exception as e:
                 bad.append((os.path.basename(f), str(e).split("\n")[0]))
                 continue
-            sc = [(prop(m, a.select_by), m) for m in mols]
+            sc = [(prop(m, a.select_by), heavy(m)) for m in mols]
             sc = [(v, m) for v, m in sc if not np.isnan(v)]
             if not sc:
                 continue

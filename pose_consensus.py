@@ -42,6 +42,18 @@ except ImportError:
     sys.exit("needs rdkit")
 
 
+def heavy(m):
+    """Hydrogens off before any distance is taken.
+
+    A docked pose's hydrogens are placed by the program, not searched, so a
+    distance that counts them measures partly the placement routine. Every
+    RMSD here is over heavy atoms."""
+    try:
+        return Chem.RemoveHs(m)
+    except Exception:
+        return m
+
+
 def parse_name(path):
     b = os.path.basename(path)
     for e in (".sdf.gz", ".sdf"):
@@ -78,6 +90,12 @@ def main():
                         "each pose of the first seed and takes the nearest "
                         "pose in every other seed, instead of trying every "
                         "combination")
+    p.add_argument("--drift-cut", type=float, default=12.0,
+                   help="a pose whose centroid sits this far from the median "
+                        "centroid of its cell is reported. Poses that left "
+                        "the search box are what produce distances larger "
+                        "than the box, and they are a docking failure, not a "
+                        "measurement")
     p.add_argument("--out")
     a = p.parse_args()
 
@@ -105,7 +123,7 @@ def main():
             except Exception as e:
                 bad.append((os.path.basename(f), str(e).split("\n")[0]))
                 continue
-            sc = [(prop(m, a.select_by), m) for m in mols]
+            sc = [(prop(m, a.select_by), heavy(m)) for m in mols]
             sc = [(v, m) for v, m in sc if not np.isnan(v)]
             if not sc:
                 continue
@@ -195,6 +213,12 @@ def main():
             best_pick = floor_pick
         best = worst(best_pick) if best_pick else np.nan
 
+        # where the poses sit, so an impossible distance can be traced to a
+        # pose that left the box rather than to the metric
+        cen = [np.array(x[1].GetConformer().GetPositions()).mean(0)
+               for ps in pose for x in ps]
+        med = np.median(np.vstack(cen), axis=0)
+        drift = [float(np.linalg.norm(c - med)) for c in cen]
         tops = tuple(0 for _ in seeds)
         tt = worst(tops)
         rows.append({
@@ -206,6 +230,8 @@ def main():
             "mean_rank": (float(np.mean([i + 1 for i in best_pick]))
                           if best_pick else np.nan),
             "closest_rmsd": floor if np.isfinite(floor) else np.nan,
+            "max_drift": float(max(drift)) if drift else np.nan,
+            "poses_far": int(sum(d > a.drift_cut for d in drift)),
             "top_vs_top": tt,
             "converged": converged})
     if not rows:
@@ -275,6 +301,22 @@ def main():
     if t["mean_rank"].mean() > 2.5:
         log.append("  the seeds find a common pose and rank it differently, so "
                    "what disagrees is the scoring, not the search")
+
+    far = t[t["poses_far"] > 0]
+    if len(far):
+        log.append("")
+        log.append(f"=== poses that left the pocket (centroid more than "
+                   f"{a.drift_cut} A from the cell's median) ===")
+        log.append("    a distance larger than the box comes from these, not "
+                   "from the comparison. The runs below should be looked at "
+                   "before their numbers are used")
+        log.append(f"  {'compound':10s}{'structure':12s}{'far poses':>11s}"
+                   f"{'max drift':>11s}{'agree':>8s}")
+        for _, r in far.sort_values("max_drift", ascending=False).iterrows():
+            log.append(f"  {r['compound']:10s}{r['structure']:12s}"
+                       f"{int(r['poses_far']):11d}{r['max_drift']:11.1f}"
+                       f"{r['consensus_rmsd']:8.2f}")
+        log.append(f"  {len(far)} of {len(t)} cells affected")
 
     text = "\n".join(log)
     print(text)
