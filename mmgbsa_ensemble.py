@@ -75,18 +75,36 @@ def preflight(a):
         say("ok", "amber tools found: "
                   + ", ".join(f"{t}={shutil.which(t)}" for t in NEEDED))
 
-    for d, what in ((a.ligand_params, "ligand parameters"),
-                    (a.receptors, "receptors"), (a.poses, "poses")):
+    for d, what in ((a.receptors, "receptors"), (a.poses, "poses")):
         if not os.path.isdir(d):
             bad.append(f"{what}: not a directory: {d}")
 
     cpds = [x.strip() for x in a.compounds.split(",") if x.strip()]
-    if not bad:
-        for c in cpds:
-            for ext in ("mol2", "frcmod"):
-                hits = glob.glob(os.path.join(a.ligand_params, f"{c}*.{ext}"))
-                if not hits:
-                    bad.append(f"{c}: no .{ext} in {a.ligand_params}")
+    params = {}
+    for spec in a.ligand_params:
+        if "=" not in spec:
+            bad.append(f"--ligand-params takes COMPOUND=DIR, got {spec!r}")
+            continue
+        c, d = spec.split("=", 1)
+        params[c.strip()] = d
+    for c in cpds:
+        d = params.get(c)
+        if d is None:
+            bad.append(f"{c}: no --ligand-params given for it")
+            continue
+        if not os.path.isdir(d):
+            bad.append(f"{c}: not a directory: {d}")
+            continue
+        frc = os.path.join(d, "LIG.frcmod")
+        if not os.path.exists(frc):
+            bad.append(f"{c}: no LIG.frcmod in {d}")
+        tmpl = [os.path.join(d, n) for n in ("LIG.lib", "LIG.mol2")]
+        have = [t for t in tmpl if os.path.exists(t)]
+        if not have:
+            bad.append(f"{c}: neither LIG.lib nor LIG.mol2 in {d}")
+        elif not bad:
+            say("ok", f"{c}: {os.path.basename(have[0])} + LIG.frcmod "
+                      f"from {d}")
 
     try:
         free = shutil.disk_usage(os.path.dirname(os.path.abspath(a.out))
@@ -120,11 +138,14 @@ def main():
             clean, and --run resumes: a cell whose result is already written
             is left alone.
         """))
-    p.add_argument("--ligand-params", required=True,
-                   help="directory holding <COMPOUND>.mol2 and .frcmod from "
-                        "the existing parameterisation. These are reused "
-                        "rather than regenerated, so the charges match the "
-                        "simulations already run")
+    p.add_argument("--ligand-params", action="append", required=True,
+                   metavar="COMPOUND=DIR",
+                   help="the directory holding that compound's LIG.frcmod "
+                        "and LIG.lib (or LIG.mol2) from the simulation "
+                        "already run. Repeat once per compound. These are "
+                        "reused rather than regenerated: charges derived "
+                        "again would not give the same numbers, and the point "
+                        "is to be comparable with the simulations")
     p.add_argument("--receptors", required=True)
     p.add_argument("--poses", required=True,
                    help="results directory, one subdirectory per structure")
@@ -171,8 +192,9 @@ def main():
         "that is not fatal, it will be tried properly on the trial complex")
 
     say("next", "the checks above pass. The trial complex and the run itself "
-                "are not built yet - send this output and the layout of "
-                "--ligand-params and they will be")
+                "are not built yet - send this output together with the "
+                "tleap.in used for the simulations, so the complex is built "
+                "the same way, and they will be")
     return 0
 
 
