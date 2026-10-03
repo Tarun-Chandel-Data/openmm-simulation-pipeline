@@ -349,10 +349,11 @@ def main():
         # the agreed pose, tested against its own receptor. Residues are
         # matched by name: the structures number them differently and the
         # question is whether an isoleucine or a tyrosine is bonded at all
-        hb_n, hb_res = None, ""
+        hb_n, hb_res, all_res = None, "", ""
         n_all, n_tgt = [], []
         if sites.get(struct) is not None and best_pick is not None:
             found, got = [], set()
+            seen = {}
             for i, x in enumerate(best_pick):
                 try:
                     mh = Chem.AddHs(pose[i][x][1], addCoords=True)
@@ -368,8 +369,18 @@ def main():
                 n_tgt.append(int(sum(mine.values())))
                 found.append(bool(mine))
                 got |= set(mine)
+                for k, v in hits.items():
+                    e = seen.setdefault(k.upper(), [0, 0])
+                    e[0] += 1          # in how many of the matched poses
+                    e[1] += int(v)     # how many bonds in all
             hb_n = f"{sum(found)}/{len(found)}"
             hb_res = " ".join(sorted(got))
+            # every residue the matched poses bond, with how many of them do
+            # and how many bonds in all, commonest first
+            all_res = " ".join(
+                f"{k}({c}/{len(best_pick)}:{b})" for k, (c, b) in
+                sorted(seen.items(), key=lambda kv: (-kv[1][0], -kv[1][1],
+                                                     kv[0])))
 
         tops = tuple(0 for _ in seeds)
         tt = worst(tops)
@@ -391,6 +402,7 @@ def main():
             "target_each": "/".join(str(q) for q in n_tgt),
             "target_mean": float(np.mean(n_tgt)) if n_tgt else np.nan,
             "hbond_residues": hb_res,
+            "bonded_residues": all_res,
             "within_min": float(np.mean(wmin)) if wmin else np.nan,
             "max_drift": float(max(drift)) if drift else np.nan,
             "poses_far": int(sum(d > a.drift_cut for d in drift)),
@@ -477,6 +489,9 @@ def main():
                    "them its own way")
         log.append("    'bonds' counts hydrogen bonds, not residues: one "
                    "residue can make more than one")
+        log.append("    every residue bonded is listed as "
+                   "NAME(poses/total:bonds) - in how many of the matched "
+                   "poses, and how many bonds across them")
         log.append(f"  {'compound':10s}{'structure':12s}{'ranks':>12s}"
                    f"{'agree':>8s}{'bonds each':>12s}{'mean':>7s}"
                    f"{'to ' + '/'.join(names):>12s}{'mean':>7s}"
@@ -493,7 +508,7 @@ def main():
                            f"{x['hbonds_each']:>12s}{x['hbonds_mean']:7.1f}"
                            f"{x['target_each']:>12s}{x['target_mean']:7.1f}"
                            f"{x['hbond_seeds']:>8s}   "
-                           f"{x['hbond_residues'] or '-'}")
+                           f"{x['bonded_residues'] or '-'}")
             log.append("")
         hit = t["hbond_residues"].astype(str).str.len() > 0
         log.append(f"  {int(hit.sum())} of {len(t)} cells have the agreed pose "
