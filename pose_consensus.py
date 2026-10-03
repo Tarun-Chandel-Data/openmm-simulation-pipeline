@@ -90,6 +90,11 @@ def main():
                         "each pose of the first seed and takes the nearest "
                         "pose in every other seed, instead of trying every "
                         "combination")
+    p.add_argument("--dump", metavar="COMPOUND:STRUCTURE",
+                   help="print the whole pose-by-pose table for one cell, "
+                        "every seed pair, and stop. Nothing here should be "
+                        "taken on trust: this is the table the choice is made "
+                        "from")
     p.add_argument("--drift-cut", type=float, default=12.0,
                    help="a pose whose centroid sits this far from the median "
                         "centroid of its cell is reported. Poses that left "
@@ -141,6 +146,12 @@ def main():
         except Exception:
             return np.nan
 
+    want = None
+    if a.dump:
+        if ":" not in a.dump:
+            sys.exit("--dump takes COMPOUND:STRUCTURE")
+        want = tuple(x.strip() for x in a.dump.split(":", 1))
+
     rows = []
     for (cpd, struct), grp in itertools.groupby(
             sorted(run, key=lambda k: (k[0], k[1], k[2])),
@@ -159,9 +170,27 @@ def main():
                     M[x, y] = rms(pose[i][x][1], pose[j][y][1])
             D[(i, j)] = M
 
+        if want is not None and (cpd, struct) == want:
+            print(f"[dump] {cpd} in {struct}: "
+                  + ", ".join(f"seed {k[2]} has {len(run[k])} poses"
+                              for k in seeds))
+            print("       heavy-atom RMSD in place, every pose against every "
+                  "pose")
+            for i, j in itertools.combinations(range(len(seeds)), 2):
+                print(f"\n  seed {seeds[i][2]} (rows) x seed {seeds[j][2]} "
+                      f"(columns)")
+                print("       " + "".join(f"{y + 1:>7d}" for y in range(n[j])))
+                for x in range(n[i]):
+                    print(f"  {x + 1:>4d} " + "".join(
+                        f"{D[(i, j)][x, y]:7.2f}" for y in range(n[j])))
+            print()
+
+        def pairs_of(pick):
+            return [(i, j, D[(i, j)][pick[i], pick[j]])
+                    for i, j in itertools.combinations(range(len(seeds)), 2)]
+
         def worst(pick):
-            v = [D[(i, j)][pick[i], pick[j]]
-                 for i, j in itertools.combinations(range(len(seeds)), 2)]
+            v = [q for _, _, q in pairs_of(pick)]
             return np.nan if any(np.isnan(q) for q in v) else max(v)
 
         # The pose wanted is the earliest-ranked one the seeds agree on, not
@@ -230,10 +259,15 @@ def main():
             "mean_rank": (float(np.mean([i + 1 for i in best_pick]))
                           if best_pick else np.nan),
             "closest_rmsd": floor if np.isfinite(floor) else np.nan,
+            "pairs": ("  ".join(
+                f"s{seeds[i][2]}-s{seeds[j][2]} {q:.2f}"
+                for i, j, q in pairs_of(best_pick)) if best_pick else ""),
             "max_drift": float(max(drift)) if drift else np.nan,
             "poses_far": int(sum(d > a.drift_cut for d in drift)),
             "top_vs_top": tt,
             "converged": converged})
+    if want is not None:
+        return 0
     if not rows:
         sys.exit("no compound-structure cell had two or more seeds")
     t = pd.DataFrame(rows)
@@ -261,8 +295,8 @@ def main():
     log.append("    'ranks' is where that pose sat in each seed; 'top v top' "
                "is the same measurement using only each seed's best pose")
     log.append(f"  {'compound':10s}{'structure':12s}{'agree':>8s}"
-               f"{'ranks':>12s}{'mean rank':>11s}{'closest':>10s}"
-               f"{'top v top':>11s}")
+               f"{'ranks':>12s}{'closest':>10s}{'top v top':>11s}"
+               f"   each pair of seeds")
     for c in order:
         g = t[t.compound == c]
         for st in structs:
@@ -271,8 +305,9 @@ def main():
                 continue
             x = x.iloc[0]
             log.append(f"  {c:10s}{st:12s}{x['consensus_rmsd']:8.2f}"
-                       f"{x['consensus_ranks']:>12s}{x['mean_rank']:11.1f}"
+                       f"{x['consensus_ranks']:>12s}"
                        f"{x['closest_rmsd']:10.2f}{x['top_vs_top']:11.2f}"
+                       f"   {x['pairs']}"
                        + ("" if x["converged"] else "   [no agreement]"))
         log.append("")
 
