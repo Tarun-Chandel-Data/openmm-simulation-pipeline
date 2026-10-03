@@ -291,12 +291,46 @@ def pose_heavy_coords(path, select_by):
     return out, None
 
 
-def write_lig_pdb(path, names, coords):
+def pdb_atom_line(serial, name, resname, chain, resseq, x, y, z, element=""):
+    """An ATOM record built by column, because it is read by column.
+
+    A formatted string that looks right can still be wrong by one place,
+    and the reader does not complain: it takes columns 18 to 20 as the
+    residue name whatever was meant, so LIG written one column early is
+    read as IG and the residue has no parameters. The record is assembled
+    here into a fixed-width buffer at the positions the format defines.
+
+    Columns: 1-6 ATOM, 7-11 serial, 13-16 name, 18-20 residue, 22 chain,
+    23-26 sequence, 31-38 x, 39-46 y, 47-54 z, 55-60 occupancy,
+    61-66 B factor, 77-78 element.
+    """
+    ln = [" "] * 80
+    def put(start, text):          # start is 1-based, as the format counts
+        for k, ch in enumerate(text):
+            ln[start - 1 + k] = ch
+    put(1, "ATOM  ")
+    put(7, f"{serial:>5d}"[:5])
+    # a name of fewer than four characters starts in column 14, which is
+    # what keeps a two-letter element distinguishable from a long name
+    put(13, f"{name:<4s}"[:4] if len(name) >= 4 else " " + f"{name:<3s}"[:3])
+    put(18, f"{resname:>3s}"[:3])
+    put(22, (chain or " ")[:1])
+    put(23, f"{resseq:>4d}"[:4])
+    put(31, f"{x:>8.3f}"[:8])
+    put(39, f"{y:>8.3f}"[:8])
+    put(47, f"{z:>8.3f}"[:8])
+    put(55, "  1.00  0.00")
+    if element:
+        put(77, f"{element.capitalize():>2s}"[:2])
+    return "".join(ln).rstrip() + "\n"
+
+
+def write_lig_pdb(path, names, coords, elements=None):
     """One LIG residue, heavy atoms only; tleap builds the rest from the lib."""
+    els = elements or [""] * len(names)
     with open(path, "w") as f:
-        for i, (nm, (x, y, z)) in enumerate(zip(names, coords), 1):
-            f.write(f"ATOM  {i:5d} {nm:<4s}LIG A   1    "
-                    f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00\n")
+        for i, (nm, (x, y, z), el) in enumerate(zip(names, coords, els), 1):
+            f.write(pdb_atom_line(i, nm, "LIG", "A", 1, x, y, z, el))
         f.write("TER\nEND\n")
 
 
@@ -402,7 +436,8 @@ def one_complex(job):
             return tag, None, (f"{len(coords)} heavy atoms in the pose, "
                                f"{len(heavy)} in LIG.mol2")
         write_lig_pdb(os.path.join(work, "lig.pdb"),
-                      [n for n, _ in heavy], coords)
+                      [n for n, _ in heavy], coords,
+                      [e for _, e in heavy])
         n, err = write_receptor_pdb(rec_src, os.path.join(work, "rec.pdb"))
         if err:
             return tag, None, err
