@@ -27,6 +27,7 @@ one complex than on four hundred.
 import argparse, os, shutil, subprocess, sys, glob, textwrap
 
 NEEDED = ["tleap", "sander", "cpptraj", "MMPBSA.py"]
+NEEDED_AUTO = ["antechamber", "parmchk2"]
 
 
 def say(tag, msg):
@@ -201,7 +202,7 @@ def preflight(a):
             bad.append(f"{what}: not a directory: {d}")
 
     cpds = [x.strip() for x in a.compounds.split(",") if x.strip()]
-    params = {}
+    params, missing_params = {}, []
     for spec in a.ligand_params:
         if "=" not in spec:
             bad.append(f"--ligand-params takes COMPOUND=DIR, got {spec!r}")
@@ -217,15 +218,18 @@ def preflight(a):
             bad.append(f"{c}: not a directory: {d}")
             continue
         frc = os.path.join(d, "LIG.frcmod")
-        if not os.path.exists(frc):
-            bad.append(f"{c}: no LIG.frcmod in {d}")
-        tmpl = [os.path.join(d, n) for n in ("LIG.lib", "LIG.mol2")]
-        have = [t for t in tmpl if os.path.exists(t)]
-        if not have:
-            bad.append(f"{c}: neither LIG.lib nor LIG.mol2 in {d}")
-        elif not bad:
-            say("ok", f"{c}: {os.path.basename(have[0])} + LIG.frcmod "
-                      f"from {d}")
+        mol2 = os.path.join(d, "LIG.mol2")
+        if os.path.exists(frc) and os.path.exists(mol2):
+            lib = "LIG.lib" if os.path.exists(os.path.join(d, "LIG.lib")) \
+                  else "LIG.mol2"
+            say("ok", f"{c}: {lib} + LIG.frcmod from {d}")
+        elif a.make_params:
+            missing_params.append(c)
+            say("ok", f"{c}: no parameters yet; they will be derived into "
+                      f"{d}")
+        else:
+            bad.append(f"{c}: no LIG.frcmod and LIG.mol2 in {d}, and "
+                       f"--make-params was not given")
 
     try:
         free = shutil.disk_usage(os.path.dirname(os.path.abspath(a.out))
@@ -248,7 +252,73 @@ def preflight(a):
         say("ok", f"{a.np} of {ncpu} cores, {ncpu - a.np} left free")
 
     say("ok", "CUDA_VISIBLE_DEVICES will be empty for every child process")
-    return bad, cpds, params
+    if missing_params and shutil.which("antechamber") is None:
+        bad.append("--make-params needs antechamber and parmchk2 "
+                   "on PATH")
+    return bad, cpds, params, missing_params
+
+
+def make_params(cpd, pose, dest, select_by, ligand_ff, env):
+    """Derive GAFF parameters for a compound that was never simulated.
+
+    The template is built from the docked pose itself, with hydrogens added
+    to it, so the heavy atoms of the parameters and of the poses are the
+    same atoms in the same order by construction rather than by luck. The
+    charges are AM1-BCC, as for the compounds that were simulated, but they
+    are derived here and not there: the provenance differs even though the
+    method does not, and that belongs in the methods section.
+    """
+    try:
+        from rdkit import Chem, RDLogger
+        from rdkit.Chem import AllChem
+        RDLogger.DisableLog("rdApp.*")
+    except ImportError:
+        return "needs rdkit"
+    try:
+        mols = [m for m in Chem.SDMolSupplier(pose, removeHs=False,
+                                              sanitize=True) if m is not None]
+    except Exception as e:                                    # noqa: BLE001
+        return f"{pose}: {e}"
+    if not mols:
+        return f"{pose}: no pose could be sanitised"
+    best, bv = mols[0], None
+    for m in mols:
+        if m.HasProp(select_by):
+            try:
+                v = float(m.GetProp(select_by))
+            except ValueError:
+                continue
+            if bv is None or v > bv:
+                best, bv = m, v
+    try:
+        mh = Chem.AddHs(best, addCoords=True)
+        AllChem.MMFFOptimizeMolecule(mh, maxIters=200)
+    except Exception as e:                                    # noqa: BLE001
+        return f"could not add hydrogens: {e}"
+    charge = sum(a.GetFormalCharge() for a in mh.GetAtoms())
+
+    os.makedirs(dest, exist_ok=True)
+    src = os.path.join(dest, "lig_h.sdf")
+    w = Chem.SDWriter(src)
+    w.write(mh)
+    w.close()
+
+    at = "gaff2" if "gaff2" in ligand_ff else "gaff"
+    ok, out = run(["antechamber", "-i", "lig_h.sdf", "-fi", "mdl",
+                   "-o", "LIG.mol2", "-fo", "mol2", "-c", "bcc",
+                   "-nc", str(charge), "-at", at, "-rn", "LIG", "-s", "2",
+                   "-pf", "y"], env, cwd=dest,
+                  log=os.path.join(dest, "antechamber.log"), timeout=3600)
+    if not os.path.exists(os.path.join(dest, "LIG.mol2")):
+        tail = "\n".join(out.splitlines()[-8:])
+        return f"antechamber made no LIG.mol2:\n{tail}"
+    ok, out = run(["parmchk2", "-i", "LIG.mol2", "-f", "mol2",
+                   "-o", "LIG.frcmod", "-s", at], env, cwd=dest,
+                  log=os.path.join(dest, "parmchk2.log"))
+    if not os.path.exists(os.path.join(dest, "LIG.frcmod")):
+        tail = "\n".join(out.splitlines()[-8:])
+        return f"parmchk2 made no LIG.frcmod:\n{tail}"
+    return None
 
 
 def heavy_from_mol2(path):
@@ -365,7 +435,7 @@ def write_receptor_pdb(src, dst):
 LEAP = """source {pff}
 source {lff}
 loadamberparams {frcmod}
-loadoff {lib}
+{load_unit}
 rec = loadpdb rec.pdb
 lig = loadpdb lig.pdb
 com = combine {{ rec lig }}
@@ -442,10 +512,13 @@ def one_complex(job):
         if err:
             return tag, None, err
 
+        lib = os.path.join(lig_dir, "LIG.lib")
+        load_unit = (f"loadoff {lib}" if os.path.exists(lib)
+                     else f"LIG = loadmol2 {os.path.join(lig_dir, 'LIG.mol2')}")
         open(os.path.join(work, "leap.in"), "w").write(LEAP.format(
             pff=a_d["protein_ff"], lff=a_d["ligand_ff"],
             frcmod=os.path.join(lig_dir, "LIG.frcmod"),
-            lib=os.path.join(lig_dir, "LIG.lib")))
+            load_unit=load_unit))
         ok, out = run(["tleap", "-f", "leap.in"], env, cwd=work,
                       log=os.path.join(work, "leap.log"))
         for f in ("com.prmtop", "rec.prmtop", "lig.prmtop", "com.inpcrd"):
@@ -527,13 +600,18 @@ def main():
                         "minimisation, so the pose is relaxed and not "
                         "replaced")
     p.add_argument("--select-by", default="CNNscore")
+    p.add_argument("--make-params", action="store_true",
+                   help="derive GAFF parameters for any compound that has "
+                        "none, from its own docked pose with hydrogens added. "
+                        "Compounds that were simulated keep the parameters "
+                        "those runs used")
     p.add_argument("--run", action="store_true",
                    help="do the work. Without it nothing is run but the "
                         "checks and a single trial complex")
     a = p.parse_args()
 
     say("mode", "checking only" if not a.run else "checking, then running")
-    bad, cpds, params = preflight(a)
+    bad, cpds, params, missing_params = preflight(a)
     if bad:
         print()
         for b in bad:
@@ -555,6 +633,20 @@ def main():
     say("ok" if ok else "note",
         "sander answers" if ok else "sander did not answer --version; "
         "that is not fatal, it will be tried properly on the trial complex")
+
+    env0 = safe_env(a.np)
+    for c in missing_params:
+        hits = sorted(glob.glob(os.path.join(a.poses, "*", f"{c}__*.sdf")))
+        if not hits:
+            say("STOP", f"{c}: no pose to derive parameters from")
+            return 1
+        say("params", f"{c}: deriving AM1-BCC charges, this takes a minute")
+        err = make_params(c, hits[0], params[c], a.select_by, a.ligand_ff,
+                          env0)
+        if err:
+            say("STOP", f"{c}: {err}")
+            return 1
+        say("ok", f"{c}: parameters written to {params[c]}")
 
     # the atom order is checked on one real pose per compound, because
     # everything downstream silently depends on it
