@@ -252,9 +252,9 @@ def preflight(a):
         ncpu = len(os.sched_getaffinity(0))
     except AttributeError:
         ncpu = os.cpu_count() or 1
-    if a.np > max(1, ncpu - 2):
+    if a.np > max(1, ncpu - 1):
         bad.append(f"--np {a.np} on {ncpu} cores leaves nothing for the job "
-                   f"already running; use {max(1, ncpu - 2)} or fewer")
+                   f"already running; use {max(1, ncpu - 1)} or fewer")
     else:
         say("ok", f"{a.np} of {ncpu} cores, {ncpu - a.np} left free")
 
@@ -607,6 +607,12 @@ def main():
                         "minimisation, so the pose is relaxed and not "
                         "replaced")
     p.add_argument("--select-by", default="CNNscore")
+    p.add_argument("--nice", type=int, default=5,
+                   help="how far the workers stand aside for whatever else "
+                        "is running. 19 is as far as it goes and can leave "
+                        "them waiting behind a busy-waiting job on the card; "
+                        "5 keeps them out of its way without starving them. "
+                        "0 competes on equal terms")
     p.add_argument("--make-params", action="store_true",
                    help="derive GAFF parameters for any compound that has "
                         "none, from its own docked pose with hydrogens added. "
@@ -747,10 +753,20 @@ def main():
 
     if jobs:
         import multiprocessing as mp
-        say("run", f"{len(jobs)} complexes on {a.np} workers")
+        say("run", f"{len(jobs)} complexes on {a.np} workers, nice "
+                   f"{a.nice}")
+        say("run", "if the machine stays idle, count the minimisations with "
+                   "  pgrep -c sander  - it should sit near the worker count")
         nfail = 0
+
+        def stand_aside():
+            try:
+                os.nice(a.nice)
+            except OSError:
+                pass
+
         try:
-            with mp.Pool(a.np, initializer=os.nice, initargs=(19,)) as pool:
+            with mp.Pool(a.np, initializer=stand_aside) as pool:
                 for i, (tag, rec, err) in enumerate(
                         pool.imap_unordered(one_complex, jobs), 1):
                     if err:
