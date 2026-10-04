@@ -18,12 +18,11 @@ show up in.
     python mmgbsa_compare.py --a1 mmgbsa_a1/cells.csv \\
         --a2 mmgbsa_a2/cells.csv --reference VB004
 """
-import argparse, math, os, sys
+import argparse, csv, math, os, sys
 
-try:
-    import pandas as pd
-except ImportError:
-    sys.exit("needs pandas")
+# Only two csv files and some arithmetic, so nothing is imported that the
+# environment holding amber might not have. The run itself has to happen
+# where sander lives, and the answer should be readable there too.
 
 
 def mean(v):
@@ -42,15 +41,35 @@ def sem(v):
 
 
 def load(path, label):
+    """[{compound, structure, dG}] from a cells.csv."""
     if not os.path.exists(path):
         sys.exit(f"no such file: {path}")
-    t = pd.read_csv(path)
-    for c in ("compound", "structure", "dG"):
-        if c not in t.columns:
-            sys.exit(f"{path} has no column {c!r}; it holds "
-                     f"{', '.join(t.columns)}")
-    t["isoform"] = label
-    return t
+    rows = []
+    with open(path, newline="") as f:
+        r = csv.DictReader(f)
+        for c in ("compound", "structure", "dG"):
+            if c not in (r.fieldnames or []):
+                sys.exit(f"{path} has no column {c!r}; it holds "
+                         f"{', '.join(r.fieldnames or [])}")
+        for d in r:
+            try:
+                rows.append({"compound": d["compound"],
+                             "structure": d["structure"],
+                             "dG": float(d["dG"]), "isoform": label})
+            except (TypeError, ValueError):
+                continue
+    if not rows:
+        sys.exit(f"{path}: no usable rows")
+    return rows
+
+
+def by_compound(rows, c):
+    return [r["dG"] for r in rows if r["compound"] == c]
+
+
+def keyed(rows, c):
+    """{structure: dG} for one compound, for pairing member by member."""
+    return {r["structure"]: r["dG"] for r in rows if r["compound"] == c}
 
 
 def main():
@@ -71,8 +90,8 @@ def main():
            "     single-point MM-GBSA on docked poses, no entropy: these "
            "compare with each other and are not binding free energies"]
 
-    g1 = {c: list(t1[t1.compound == c]["dG"]) for c in cpds}
-    g2 = {c: list(t2[t2.compound == c]["dG"]) for c in cpds}
+    g1 = {c: by_compound(t1, c) for c in cpds}
+    g2 = {c: by_compound(t2, c) for c in cpds}
     thin = [c for c in cpds if len(g1[c]) < 3 or len(g2[c]) < 3]
     if thin:
         log.append(f"     [warn] too few members to say anything about: "
@@ -121,11 +140,9 @@ def main():
             if c == ref:
                 continue
             cells = []
-            for lbl, t in (("a1", t1), ("a2", t2)):
-                x = t[t.compound == c].set_index("structure")["dG"]
-                y = t[t.compound == ref].set_index("structure")["dG"]
-                both = x.index.intersection(y.index)
-                d = [float(x[i] - y[i]) for i in both]
+            for t in (t1, t2):
+                x, y = keyed(t, c), keyed(t, ref)
+                d = [x[k] - y[k] for k in sorted(set(x) & set(y))]
                 cells.append((mean(d) if d else float("nan"),
                               sem(d) if d else float("nan"), len(d)))
             (d1, s1, n1), (d2, s2, n2) = cells
@@ -147,7 +164,10 @@ def main():
     text = "\n".join(log)
     print(text)
     if a.out and rows:
-        pd.DataFrame(rows).to_csv(a.out + ".csv", index=False)
+        with open(a.out + ".csv", "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(rows[0]))
+            w.writeheader()
+            w.writerows(rows)
         with open(a.out + ".txt", "w") as f:
             f.write(text + "\n")
         print(f"\n[out] {a.out}.csv, {a.out}.txt")
