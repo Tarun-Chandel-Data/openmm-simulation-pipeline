@@ -519,7 +519,69 @@ def write_lig_pdb(path, names, coords, elements=None):
         f.write("TER\nEND\n")
 
 
-def write_receptor_pdb(src, dst):
+def residue_atoms(path):
+    """{(chain, resseq): (resname, {atom names})} for the protein of a pdb."""
+    drop = {"HOH", "WAT", "NA", "CL", "K", "MG", "ZN", "SO4", "PO4", "EDO",
+            "GOL", "LIG", "UNL", "UNK"}
+    out = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                if not line.startswith("ATOM"):
+                    continue
+                rn = line[17:20].strip().upper()
+                if rn in drop:
+                    continue
+                nm = line[12:16].strip()
+                el = line[76:78].strip().upper()
+                if el == "H" or (not el and nm[:1] == "H"):
+                    continue
+                key = (line[21], line[22:26].strip())
+                e = out.setdefault(key, [rn, set()])
+                e[1].add(nm)
+    except OSError:
+        return None
+    return {k: (v[0], v[1]) for k, v in out.items()}
+
+
+def common_atoms(paths):
+    """What every one of these receptors has: the rest is not comparable.
+
+    Crystal entries differ in which side chains and termini were resolved,
+    so two of them are not the same system and their energies are not
+    comparable. The intersection is taken residue by residue and, within a
+    residue that all of them have, atom by atom: anything only some of them
+    hold is dropped from all of them.
+    """
+    sets = []
+    for p_ in paths:
+        r = residue_atoms(p_)
+        if r is None:
+            return None, f"could not read {p_}"
+        sets.append(r)
+    if not sets:
+        return None, "no receptors"
+    keys = set(sets[0])
+    for r in sets[1:]:
+        keys &= set(r)
+    keep = {}
+    for k in keys:
+        names = set(sets[0][k][1])
+        rn = sets[0][k][0]
+        ok = True
+        for r in sets[1:]:
+            if r[k][0] != rn:          # a different residue at the same place
+                ok = False
+                break
+            names &= r[k][1]
+        if ok and names:
+            keep[k] = names
+    if not keep:
+        return None, "the receptors share no residues"
+    return keep, None
+
+
+def write_receptor_pdb(src, dst, keep=None):
     """Protein only: no waters, ions, other heteroatoms or hydrogens.
 
     Hydrogens are left to tleap so their names are the force field's own;
@@ -539,6 +601,10 @@ def write_receptor_pdb(src, dst):
                 nm = line[12:16].strip()
                 if el == "H" or (not el and nm[:1] == "H"):
                     continue
+                if keep is not None:
+                    k = (line[21], line[22:26].strip())
+                    if k not in keep or nm not in keep[k]:
+                        continue
                 o.write(line)
                 n += 1
             o.write("TER\nEND\n")
@@ -631,7 +697,8 @@ def one_complex(job):
         write_lig_pdb(os.path.join(work, "lig.pdb"),
                       [n for n, _ in heavy], coords,
                       [e for _, e in heavy])
-        n, err = write_receptor_pdb(rec_src, os.path.join(work, "rec.pdb"))
+        n, err = write_receptor_pdb(rec_src, os.path.join(work, "rec.pdb"),
+                                    a_d.get("keep"))
         if err:
             return tag, None, err
 
@@ -734,6 +801,11 @@ def main():
                         "them waiting behind a busy-waiting job on the card; "
                         "5 keeps them out of its way without starving them. "
                         "0 competes on equal terms")
+    p.add_argument("--trim-common", action="store_true",
+                   help="where the receptors do not hold the same atoms - "
+                        "crystal entries resolve different side chains and "
+                        "termini - keep only what every one of them has, so "
+                        "the systems compared are the same protein")
     p.add_argument("--consensus", action="store_true",
                    help="where a cell was run under several seeds, carry "
                         "forward the pose the seeds agree on rather than the "
@@ -824,18 +896,30 @@ def main():
             rec = hits[0]
         counts[sn] = (rec, sum(1 for ln in open(rec)
                                if ln.startswith("ATOM")))
+    keep = None
     n = {v[1] for v in counts.values()}
     if len(n) > 1:
         lo, hi = min(n), max(n)
-        say("STOP", f"the ensemble members do not hold the same protein: "
-                    f"{lo} to {hi} atoms across {len(counts)} files")
-        return 1
-    say("ok", f"all {len(counts)} members hold {n.pop()} protein atoms")
+        if not a.trim_common:
+            say("STOP", f"the receptors do not hold the same protein: "
+                        f"{lo} to {hi} atoms across {len(counts)} files")
+            say("STOP", "their energies are not comparable as they stand; "
+                        "--trim-common keeps only what all of them have")
+            return 1
+        keep, err = common_atoms([v[0] for v in counts.values()])
+        if err:
+            say("STOP", err)
+            return 1
+        kept = sum(len(v) for v in keep.values())
+        say("ok", f"receptors held {lo} to {hi} atoms; trimmed to the "
+                  f"{kept} in {len(keep)} residues all of them share")
+    else:
+        say("ok", f"all {len(counts)} receptors hold {n.pop()} protein atoms")
 
     a_d = {"select_by": a.select_by, "protein_ff": a.protein_ff,
            "ligand_ff": a.ligand_ff, "igb": a.igb, "salt": a.salt,
            "min_steps": a.min_steps, "restraint": a.restraint,
-           "consensus": a.consensus}
+           "consensus": a.consensus, "keep": keep}
 
     jobs, done = [], 0
     for c in cpds:
