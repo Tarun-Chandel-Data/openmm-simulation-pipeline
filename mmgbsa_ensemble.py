@@ -328,6 +328,114 @@ def make_params(cpd, pose, dest, select_by, ligand_ff, env):
     return None
 
 
+def _scored_poses(path, select_by):
+    """[(score, mol)] for one file, best first, hydrogens removed."""
+    from rdkit import Chem, RDLogger
+    RDLogger.DisableLog("rdApp.*")
+    try:
+        mols = [m for m in Chem.SDMolSupplier(path, removeHs=False,
+                                              sanitize=False) if m is not None]
+    except Exception:                                         # noqa: BLE001
+        return []
+    out = []
+    for m in mols:
+        try:
+            mh = Chem.RemoveHs(m, sanitize=False)
+        except Exception:                                     # noqa: BLE001
+            mh = m
+        v = float("-inf")
+        if m.HasProp(select_by):
+            try:
+                v = float(m.GetProp(select_by))
+            except ValueError:
+                pass
+        out.append((v, mh))
+    out.sort(key=lambda r: -r[0])
+    return out
+
+
+def consensus_pose(files, select_by):
+    """The pose the seeds agree on, rather than the one ranked first.
+
+    Which pose the scoring puts first is a statement about the scoring; which
+    pose every seed found is a statement about the search. Where a cell was
+    run under several seeds the second is the better pose to carry forward,
+    and it is often not the first-ranked one.
+
+    Every pose of every seed is taken as the anchor in turn, the nearest pose
+    in each other seed is taken with it, and the set that holds together best
+    is kept. The anchor's own pose is returned, with the ranks the set held
+    and how far apart its members were, so the choice can be audited.
+    """
+    from rdkit.Chem import rdMolAlign
+    per = [(f, _scored_poses(f, select_by)) for f in files]
+    per = [(f, ps) for f, ps in per if ps]
+    if not per:
+        return None, "no poses read"
+    if len(per) == 1:
+        return per[0][1][0][1], {"ranks": "1", "agree": 0.0, "seeds": 1}
+
+    n = [len(ps) for _, ps in per]
+    D = {}
+    for i in range(len(per)):
+        for j in range(i + 1, len(per)):
+            M = [[float("nan")] * n[j] for _ in range(n[i])]
+            for x in range(n[i]):
+                for y in range(n[j]):
+                    try:
+                        M[x][y] = float(rdMolAlign.CalcRMS(per[i][1][x][1],
+                                                           per[j][1][y][1]))
+                    except Exception:                         # noqa: BLE001
+                        pass
+            D[(i, j)] = M
+
+    def at(i, j, x, y):
+        return D[(i, j)][x][y] if i < j else D[(j, i)][y][x]
+
+    def worst(pick):
+        v = [at(i, j, pick[i], pick[j])
+             for i in range(len(per)) for j in range(i + 1, len(per))]
+        return float("nan") if any(q != q for q in v) else max(v)
+
+    best, best_pick = float("inf"), None
+    for i in range(len(per)):
+        for x in range(n[i]):
+            pick = [None] * len(per)
+            pick[i] = x
+            ok = True
+            for j in range(len(per)):
+                if j == i:
+                    continue
+                col = [at(i, j, x, y) for y in range(n[j])]
+                good = [(v, y) for y, v in enumerate(col) if v == v]
+                if not good:
+                    ok = False
+                    break
+                pick[j] = min(good)[1]
+            if not ok:
+                continue
+            w = worst(tuple(pick))
+            if w == w and w < best:
+                best, best_pick = w, (i, tuple(pick))
+    if best_pick is None:
+        return None, "the seeds share no comparable pose"
+    anchor, pick = best_pick
+    return per[anchor][1][pick[anchor]][1], {
+        "ranks": "/".join(str(k + 1) for k in pick),
+        "agree": round(best, 3), "seeds": len(per)}
+
+
+def heavy_coords_of(mol):
+    conf = mol.GetConformer()
+    out = []
+    for at_ in mol.GetAtoms():
+        if at_.GetSymbol().upper() == "H":
+            continue
+        pt = conf.GetAtomPosition(at_.GetIdx())
+        out.append((pt.x, pt.y, pt.z))
+    return out
+
+
 def heavy_from_mol2(path):
     atoms, err = read_mol2_atoms(path)
     if err:
@@ -506,9 +614,17 @@ def one_complex(job):
         heavy, err = heavy_from_mol2(os.path.join(lig_dir, "LIG.mol2"))
         if err:
             return tag, None, err
-        coords, err = pose_heavy_coords(pose, a_d["select_by"])
-        if err:
-            return tag, None, err
+        info = None
+        if a_d.get("consensus") and isinstance(pose, (list, tuple)):
+            mol, info = consensus_pose(list(pose), a_d["select_by"])
+            if mol is None:
+                return tag, None, str(info)
+            coords = heavy_coords_of(mol)
+        else:
+            one = pose[0] if isinstance(pose, (list, tuple)) else pose
+            coords, err = pose_heavy_coords(one, a_d["select_by"])
+            if err:
+                return tag, None, err
         if len(coords) != len(heavy):
             return tag, None, (f"{len(coords)} heavy atoms in the pose, "
                                f"{len(heavy)} in LIG.mol2")
@@ -563,7 +679,12 @@ def one_complex(job):
             tail = "\n".join(out.splitlines()[-8:])
             return tag, None, f"{err}\n{tail}"
         rec = {"compound": cpd, "structure": struct, "dG": res[0],
-               "sd": res[1], "pose": pose}
+               "sd": res[1],
+               "pose": (pose if isinstance(pose, str) else ";".join(pose))}
+        if info:
+            rec["consensus_ranks"] = info["ranks"]
+            rec["consensus_rmsd"] = info["agree"]
+            rec["seeds"] = info["seeds"]
         os.makedirs(os.path.dirname(out_json), exist_ok=True)
         with open(out_json, "w") as f:
             json.dump(rec, f)
@@ -613,6 +734,12 @@ def main():
                         "them waiting behind a busy-waiting job on the card; "
                         "5 keeps them out of its way without starving them. "
                         "0 competes on equal terms")
+    p.add_argument("--consensus", action="store_true",
+                   help="where a cell was run under several seeds, carry "
+                        "forward the pose the seeds agree on rather than the "
+                        "one the scoring ranked first. Which pose is ranked "
+                        "first is a statement about the scoring; which pose "
+                        "every seed found is a statement about the search")
     p.add_argument("--make-params", action="store_true",
                    help="derive GAFF parameters for any compound that has "
                         "none, from its own docked pose with hydrogens added. "
@@ -707,7 +834,8 @@ def main():
 
     a_d = {"select_by": a.select_by, "protein_ff": a.protein_ff,
            "ligand_ff": a.ligand_ff, "igb": a.igb, "salt": a.salt,
-           "min_steps": a.min_steps, "restraint": a.restraint}
+           "min_steps": a.min_steps, "restraint": a.restraint,
+           "consensus": a.consensus}
 
     jobs, done = [], 0
     for c in cpds:
@@ -720,9 +848,12 @@ def main():
             if os.path.exists(oj):
                 done += 1
                 continue
-            jobs.append((c, sn, hits[0], rec, params[c], oj,
+            jobs.append((c, sn, (hits if a.consensus else hits[0]),
+                         rec, params[c], oj,
                          os.path.join(a.out, "work", f"{c}__{sn}"), a_d))
     say("ok", f"{len(jobs)} complexes to do, {done} already finished")
+    if a.consensus:
+        say("ok", "using the pose the seeds agree on, not the top-scored one")
     if not jobs and not done:
         say("STOP", "no complex matched a compound and a receptor")
         return 1
