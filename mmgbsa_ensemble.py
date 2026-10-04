@@ -1027,13 +1027,21 @@ def main():
                "binding free energies")
     try:
         import csv
+        # the header is the union of every row's keys, not a fixed list: the
+        # consensus rows carry fields the others do not, and a header that
+        # does not hold them raises at the very last step of a finished run,
+        # with every energy computed and the table thrown away
+        head = []
+        for r in rows:
+            for k in r:
+                if k not in head:
+                    head.append(k)
         with open(os.path.join(a.out, "cells.csv"), "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=["compound", "structure", "dG",
-                                              "sd", "pose"])
+            w = csv.DictWriter(f, fieldnames=head, restval="")
             w.writeheader()
             w.writerows(rows)
         say("out", f"{os.path.join(a.out, 'cells.csv')}")
-    except OSError as e:
+    except (OSError, ValueError) as e:
         say("note", f"could not write the csv: {e}")
     return 0
 
