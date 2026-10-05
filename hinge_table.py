@@ -83,12 +83,12 @@ def main():
     p.add_argument("--affinity", default="minimizedAffinity")
     p.add_argument("--only", help="comma-separated compounds, in order")
     p.add_argument("--by-run", action="store_true",
-                   help="report each run under its own heading instead of "
-                        "pooling them. Two runs are repeats of each other only "
-                        "when they used the same receptors; ensembles taken "
-                        "from different simulations are different experiments, "
-                        "and averaging them hides the difference they were "
-                        "made to show")
+                   help="lay the runs out side by side, one column per run, "
+                        "instead of pooling them into one count. Pooling "
+                        "hides whether the runs agree, and two runs are "
+                        "repeats of each other only when they used the same "
+                        "receptors: ensembles from different simulations are "
+                        "different experiments")
     p.add_argument("--top-n", type=int, default=0,
                    help="keep only the N best-scoring poses of each run in "
                         "the all-pose columns. The lower-ranked poses of a "
@@ -210,9 +210,56 @@ def main():
     r0 = res[0]
     r1 = res[1] if len(res) > 1 else "-"
     rows = []
-    for run in runs:
-        if run is not None:
-            log.append(f"--- {run} ---")
+
+    if a.by_run:
+        # one row per compound and receptor, one column per run: the point is
+        # to see at a glance whether the runs agree, which a pooled count and
+        # a stack of separate tables both hide
+        def block(title, pick):
+            log.append(title)
+            log.append(f"  {'compound':10s}{'receptor':13s}"
+                       + "".join(f"{r:>9s}" for r in runs))
+            for cpd in cpds:
+                for st in structs:
+                    cells_here = [cell.get((cpd, st, r)) for r in runs]
+                    if not any(cells_here):
+                        continue
+                    line = f"  {cpd:10s}{st:13s}"
+                    for c in cells_here:
+                        if c is None:
+                            line += f"{'-':>9s}"
+                        else:
+                            line += f"{pick(c):>9s}"
+                    log.append(line)
+                log.append("")
+
+        block("=== either residue, out of the poses of each run ===",
+              lambda c: f"{c['either']}/{c['n_pose']}")
+        for x in res:
+            block(f"=== {x}, out of the poses of each run ===",
+                  lambda c, x=x: f"{c['hb'][x]}/{c['n_pose']}")
+        block("=== the top pose of each run: does it bond either residue? ===",
+              lambda c: f"{c['top_either']}/{c['runs']}")
+
+        for cpd in cpds:
+            for st in structs:
+                for r in runs:
+                    c = cell.get((cpd, st, r))
+                    if c is None:
+                        continue
+                    sv, aff = np.array(c["s"]), np.array(c["aff"])
+                    sdv = lambda v: (np.std(v, ddof=1) if len(v) > 1 else 0.0)
+                    rec = {"compound": cpd, "structure": st, "run": r,
+                           "poses": c["n_pose"], "poses_hinge": c["either"],
+                           "runs": c["runs"], "top_hinge": c["top_either"],
+                           "score_mean": np.mean(sv), "score_sd": sdv(sv),
+                           "affinity_mean": np.mean(aff),
+                           "affinity_sd": sdv(aff)}
+                    for x in res:
+                        rec["poses_" + x] = c["hb"][x]
+                        rec["top_" + x] = c["top_hb"][x]
+                    rows.append(rec)
+    else:
         log.append(f"  {'compound':9s}{'structure':11s}"
                    f"{'either':>8s}{r0:>9s}{r1:>9s}"
                    f"{'score':>8s}{'affinity':>10s}"
@@ -224,7 +271,7 @@ def main():
                    f"{'mean +- sd':>15s}{'mean +- sd':>16s}")
         for cpd in cpds:
             for st in structs:
-                c = cell.get((cpd, st, run) if run is not None else (cpd, st))
+                c = cell.get((cpd, st))
                 if c is None:
                     log.append(f"  {cpd:9s}{st:11s}{'-':>8s}")
                     continue
@@ -243,19 +290,17 @@ def main():
                     f"{frac(c['hb'][res[1]] if len(res) > 1 else 0, np_):>10s}"
                     f"{np.mean(sv):10.3f} +-{sd(sv):4.3f}"
                     f"{np.mean(aff):10.2f} +-{sd(aff):5.2f}")
-                r = {"compound": cpd, "structure": st, "runs": n,
-                     "top_hinge": c["top_either"],
-                     "top_score": np.mean(c["top_s"]),
-                     "top_affinity": np.mean(c["top_a"]), "poses": np_,
-                     "poses_hinge": c["either"],
-                     "score_mean": np.mean(sv), "score_sd": sd(sv),
-                     "affinity_mean": np.mean(aff), "affinity_sd": sd(aff)}
-                if run is not None:
-                    r["run"] = run
+                rec = {"compound": cpd, "structure": st, "runs": n,
+                       "top_hinge": c["top_either"],
+                       "top_score": np.mean(c["top_s"]),
+                       "top_affinity": np.mean(c["top_a"]), "poses": np_,
+                       "poses_hinge": c["either"],
+                       "score_mean": np.mean(sv), "score_sd": sd(sv),
+                       "affinity_mean": np.mean(aff), "affinity_sd": sd(aff)}
                 for x in res:
-                    r["top_" + x] = c["top_hb"][x]
-                    r["poses_" + x] = c["hb"][x]
-                rows.append(r)
+                    rec["top_" + x] = c["top_hb"][x]
+                    rec["poses_" + x] = c["hb"][x]
+                rows.append(rec)
             log.append("")
 
     text = "\n".join(log)
