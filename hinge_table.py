@@ -39,6 +39,22 @@ except ImportError:
     sys.exit("needs hbond_geometry.py beside this script")
 
 
+def matches(want, found):
+    """Does any bonded residue answer to this name?
+
+    A residue given with its number is matched exactly. A residue given by
+    name alone matches any number, which is what a panel of crystal entries
+    needs: they number the same residue differently, so one run cannot name
+    them all, and asking for TYR116 across eight structures finds it in at
+    most one of them.
+    """
+    w = want.upper()
+    if any(ch.isdigit() for ch in w):
+        return w in found
+    return any("".join(c for c in k if c.isalpha()).upper() == w
+               for k in found)
+
+
 def parse_name(path):
     b = os.path.basename(path)
     for e in (".sdf.gz", ".sdf"):
@@ -137,7 +153,7 @@ def main():
                     mh = m
                 hits, _ = bonds_for_pose(mh, sites, a)
                 up = {kk.upper() for kk in hits}
-                scored.append((sc, af, {x: (x in up) for x in res}))
+                scored.append((sc, af, {x: matches(x, up) for x in res}))
             scored.sort(key=lambda r: -r[0])
             best = (scored[0][2], scored[0][0], scored[0][1]) if scored else None
             # the all-pose columns describe the best N of the run, since the
@@ -171,7 +187,10 @@ def main():
            f"     hydrogen bond: D-A <= {a.dist} A with H...A <= {a.h_dist} A "
            f"and D-H...A >= {a.angle:g} deg - the geometric test, not a "
            f"distance alone",
-           f"     hinge residues: {' or '.join(res)}"]
+           f"     hinge residues: {' or '.join(res)}"
+           + ("  (by name, any number)"
+              if not any(ch.isdigit() for r in res for ch in r)
+              else "  (name and number, exactly)")]
     if bad:
         log.append(f"     [note] {len(bad)} files not read: "
                    + "; ".join(f"{x} ({y})" for x, y in bad[:4])
